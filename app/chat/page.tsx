@@ -33,7 +33,6 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // localStorage에서 대화 기록 로드
   useEffect(() => {
     const saved = localStorage.getItem('jingpt-chats');
     if (saved) {
@@ -46,21 +45,18 @@ export default function ChatPage() {
     }
   }, []);
 
-  // 대화 기록 저장
   useEffect(() => {
     if (chats.length > 0) {
       localStorage.setItem('jingpt-chats', JSON.stringify(chats));
     }
   }, [chats]);
 
-  // 스크롤
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
 
-  // 로그인 안 됐으면 홈으로
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/');
@@ -179,7 +175,6 @@ export default function ChatPage() {
 
   return (
     <div className="min-h-screen bg-[#0b0e14] flex">
-      {/* 사이드바 */}
       <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-[#0d1117] border-r border-gray-800 flex flex-col transition-all duration-300 overflow-hidden`}>
         <div className="p-3 space-y-2">
           <button 
@@ -227,7 +222,6 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* 메인 채팅 */}
       <div className="flex-1 flex flex-col">
         <div className="h-14 border-b border-gray-800 flex items-center px-4 gap-3">
           <button 
@@ -387,17 +381,3 @@ export default function ChatPage() {
     </div>
   );
 }
-```
-
----
-
-**폴더 구조:**
-```
-app/
-├── page.tsx          (메인 홈)
-├── chat/
-│   └── page.tsx      (채팅 페이지 - 새로 만들기)
-├── api/
-│   └── chat/
-│       └── route.ts
-└── ...
