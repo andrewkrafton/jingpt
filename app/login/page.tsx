@@ -1,14 +1,13 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { signIn, useSession } from "next-auth/react";
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { Bot, Building2, FileText } from 'lucide-react';
 
-export default function LoginPage() {
+function LoginContent() {
   const { data: session, status } = useSession();
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [hasAtlassian, setHasAtlassian] = useState(false);
   const [checking, setChecking] = useState(true);
 
@@ -25,7 +24,7 @@ export default function LoginPage() {
       setChecking(false);
     };
     checkAtlassian();
-  }, [searchParams]);
+  }, []);
 
   // 둘 다 연결되면 채팅으로
   useEffect(() => {
@@ -135,5 +134,17 @@ export default function LoginPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center text-gray-400">
+        로딩 중...
+      </div>
+    }>
+      <LoginContent />
+    </Suspense>
   );
 }
