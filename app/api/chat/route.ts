@@ -11,9 +11,6 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' })
 
 // SharePoint 파일 검색
 async function searchSharePoint(query: string, accessToken: string) {
-  console.log("=== SharePoint 검색 ===");
-  console.log("검색어:", query);
-
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/search/query', {
       method: 'POST',
@@ -38,8 +35,6 @@ async function searchSharePoint(query: string, accessToken: string) {
 
     const data = await res.json();
     const hits = data.value?.[0]?.hitsContainers?.[0]?.hits || [];
-    
-    console.log("검색 결과 수:", hits.length);
 
     if (hits.length === 0) {
       return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
@@ -81,8 +76,6 @@ async function searchSharePoint(query: string, accessToken: string) {
 
 // Excel 시트 목록 조회
 async function getExcelSheets(driveId: string, itemId: string, accessToken: string) {
-  console.log("=== Excel 시트 목록 조회 ===");
-
   try {
     const res = await fetch(
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/worksheets`,
@@ -96,8 +89,6 @@ async function getExcelSheets(driveId: string, itemId: string, accessToken: stri
 
     const data = await res.json();
     const sheets = (data.value || []).map((s: any) => s.name);
-    
-    console.log("시트 목록:", sheets);
     return JSON.stringify({ sheets: sheets });
   } catch (error: any) {
     return JSON.stringify({ error: "시트 목록 조회 실패", detail: error.message });
@@ -106,9 +97,6 @@ async function getExcelSheets(driveId: string, itemId: string, accessToken: stri
 
 // Excel 특정 시트 읽기
 async function readExcelSheet(driveId: string, itemId: string, sheetName: string, accessToken: string) {
-  console.log("=== Excel 시트 읽기 ===");
-  console.log("시트명:", sheetName);
-
   try {
     const res = await fetch(
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/worksheets('${encodeURIComponent(sheetName)}')/usedRange`,
@@ -122,8 +110,6 @@ async function readExcelSheet(driveId: string, itemId: string, sheetName: string
 
     const data = await res.json();
     const values = data.values || [];
-    
-    console.log("읽은 행 수:", values.length);
 
     const maxRows = Math.min(values.length, 100);
     let content = '';
@@ -149,21 +135,15 @@ async function readExcelSheet(driveId: string, itemId: string, sheetName: string
   }
 }
 
-// PDF 파일 읽기 (pdf-parse 사용)
+// PDF 파일 읽기
 async function readPdfFile(driveId: string, itemId: string, accessToken: string) {
-  console.log("=== PDF 읽기 시작 ===");
-
   try {
-    // 1. PDF 파일 다운로드
     const downloadRes = await fetch(
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`,
       { headers: { 'Authorization': `Bearer ${accessToken}` } }
     );
 
     if (!downloadRes.ok) {
-      console.log("PDF 다운로드 실패:", downloadRes.status);
-      
-      // 파일 정보라도 가져오기
       const infoRes = await fetch(
         `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}`,
         { headers: { 'Authorization': `Bearer ${accessToken}` } }
@@ -180,19 +160,10 @@ async function readPdfFile(driveId: string, itemId: string, accessToken: string)
       return JSON.stringify({ error: "PDF 파일을 다운로드할 수 없습니다." });
     }
 
-    // 2. ArrayBuffer로 변환
     const arrayBuffer = await downloadRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    
-    console.log("PDF 다운로드 완료, 크기:", buffer.length);
-
-    // 3. pdf-parse로 텍스트 추출
     const pdfData = await pdf(buffer);
-    
-    console.log("PDF 파싱 완료, 페이지 수:", pdfData.numpages);
-    console.log("추출된 텍스트 길이:", pdfData.text.length);
 
-    // 4. 텍스트 정리 (최대 15000자)
     let text = pdfData.text || '';
     text = text.replace(/\s+/g, ' ').trim();
     
@@ -211,11 +182,9 @@ async function readPdfFile(driveId: string, itemId: string, accessToken: string)
     });
 
   } catch (error: any) {
-    console.log("PDF 읽기 에러:", error.message);
     return JSON.stringify({ 
       error: "PDF 파싱 실패", 
-      detail: error.message,
-      suggestion: "파일 링크를 통해 직접 확인해주세요."
+      detail: error.message
     });
   }
 }
@@ -240,9 +209,23 @@ function cleanMessages(messages: any[]) {
   return cleaned.slice(-6);
 }
 
+// Tool 이름을 한글 상태 메시지로 변환
+function getToolStatusMessage(toolName: string, input: any): string {
+  switch (toolName) {
+    case 'search_sharepoint':
+      return `🔍 SharePoint에서 "${input.query}" 검색 중...`;
+    case 'get_excel_sheets':
+      return `📊 Excel 파일 구조 분석 중...`;
+    case 'read_excel_sheet':
+      return `📈 "${input.sheetName}" 시트 데이터 읽는 중...`;
+    case 'read_pdf_file':
+      return `📄 PDF 문서 내용 분석 중...`;
+    default:
+      return `⏳ 처리 중...`;
+  }
+}
+
 export async function POST(req: Request) {
-  console.log("=== API 요청 시작 ===");
-  
   try {
     const session = await getServerSession(authOptions) as any;
     
@@ -263,34 +246,14 @@ export async function POST(req: Request) {
 SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용을 읽어서** 구체적인 답변을 제공합니다.
 
 ## 데이터 위치
-1. **재무제표/Cap Table/지분율**: 
-   - 검색어: "[회사명] cap table" 또는 "[회사명] 재무"
-   - 위치: Financialinstruments 사이트
-   
-2. **계약서 (BCA, SHA, ROFN, 2PP 등)**:
-   - 검색어: "[회사명] Contracts Package" 또는 "[회사명] BCA"
-   - 위치: Corp.Dev.StrategyDiv 사이트 > Contracts Package
-   - **중요**: ROFN, 2PP 조항은 BCA 또는 Investors Rights Agreement PDF에 있음
+1. **재무제표/Cap Table/지분율**: Financialinstruments 사이트
+2. **계약서 (BCA, SHA, ROFN, 2PP 등)**: Corp.Dev.StrategyDiv > Contracts Package
 
 ## 사용 가능한 도구
 1. **search_sharepoint**: 파일 검색
 2. **get_excel_sheets**: Excel 시트 목록 조회
 3. **read_excel_sheet**: Excel 특정 시트 읽기
-4. **read_pdf_file**: PDF 파일 내용 읽기 ⭐ PDF도 읽을 수 있습니다!
-
-## 작업 순서 (필수!)
-
-### 계약서/ROFN/2PP 질문:
-1. search_sharepoint로 "[회사명] BCA" 또는 "[회사명] Contracts" 검색
-2. **read_pdf_file로 PDF 내용을 반드시 읽기** ⭐
-3. PDF 내용에서 ROFN/2PP/Publishing Rights 조항 찾아서 답변
-4. 구체적인 조건(기간, 범위, 수익배분 등) 명시
-
-### 지분율/Cap Table 질문:
-1. search_sharepoint로 "[회사명] cap table" 검색
-2. get_excel_sheets로 시트 목록 확인
-3. read_excel_sheet로 적절한 시트 읽기
-4. 크래프톤 지분율 찾아서 답변
+4. **read_pdf_file**: PDF 파일 내용 읽기
 
 ## 포트폴리오사 별칭
 - Ruckus Games Holdings, Inc. = Ruckus
@@ -300,12 +263,27 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
 - People Can Fly = PCF
 - Unknown Worlds = UW
 
+## 답변 형식 (중요!)
+
+### 출처 표시 규칙
+답변 마지막에 반드시 출처를 아래 형식으로 표시하세요:
+
+---
+**📁 출처**
+- [파일명.pdf](SharePoint URL) - 최종 수정일: YYYY-MM-DD
+- [파일명.xlsx](SharePoint URL) - 최종 수정일: YYYY-MM-DD
+
+### 예시:
+---
+**📁 출처**
+- [Ruckus Games - BCA.pdf](https://blueholestudio.sharepoint.com/sites/Corp.Dev.StrategyDiv/...) - 최종 수정일: 2025-06-15
+- [Ruckus_CapTable.xlsx](https://blueholestudio.sharepoint.com/sites/Financialinstruments/...) - 최종 수정일: 2025-12-31
+
 ## 답변 원칙
-1. **PDF도 읽을 수 있으니 반드시 read_pdf_file 도구를 사용해서 내용 확인**
-2. "확인해보겠습니다"라고 했으면 실제로 도구 사용해서 확인
-3. 구체적인 조항 내용, 숫자, 조건을 답변에 포함
-4. 출처(파일명, 날짜) 명시
-5. 한국어로 친절하고 상세하게 답변`;
+1. PDF, Excel 모두 직접 읽어서 구체적인 내용 제공
+2. 조항 내용, 숫자, 조건을 답변에 포함
+3. **출처는 반드시 클릭 가능한 마크다운 링크로 제공**
+4. 한국어로 친절하고 상세하게 답변`;
 
     const tools = [
       {
@@ -314,10 +292,7 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
         input_schema: {
           type: "object" as const,
           properties: {
-            query: { 
-              type: "string", 
-              description: "검색어. 예: 'Ruckus BCA', 'Antistatic Contracts', 'D4N cap table'" 
-            }
+            query: { type: "string", description: "검색어" }
           },
           required: ["query"]
         }
@@ -328,8 +303,8 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
         input_schema: {
           type: "object" as const,
           properties: {
-            driveId: { type: "string", description: "드라이브 ID" },
-            itemId: { type: "string", description: "파일 ID" }
+            driveId: { type: "string" },
+            itemId: { type: "string" }
           },
           required: ["driveId", "itemId"]
         }
@@ -340,97 +315,132 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
         input_schema: {
           type: "object" as const,
           properties: {
-            driveId: { type: "string", description: "드라이브 ID" },
-            itemId: { type: "string", description: "파일 ID" },
-            sheetName: { type: "string", description: "읽을 시트 이름" }
+            driveId: { type: "string" },
+            itemId: { type: "string" },
+            sheetName: { type: "string" }
           },
           required: ["driveId", "itemId", "sheetName"]
         }
       },
       {
         name: "read_pdf_file",
-        description: "PDF 파일의 텍스트 내용을 읽습니다. 계약서(BCA, ROFN, 2PP 등) 확인 시 반드시 사용하세요.",
+        description: "PDF 파일의 텍스트 내용을 읽습니다.",
         input_schema: {
           type: "object" as const,
           properties: {
-            driveId: { type: "string", description: "드라이브 ID" },
-            itemId: { type: "string", description: "파일 ID" }
+            driveId: { type: "string" },
+            itemId: { type: "string" }
           },
           required: ["driveId", "itemId"]
         }
       }
     ];
 
-    let currentMessages = [...cleanedMessages];
-    let response = await anthropic.messages.create({
-      model: modelId,
-      max_tokens: 8192,
-      system: systemPrompt,
-      messages: currentMessages,
-      tools: tools
-    });
+    // 스트리밍 응답 설정
+    const encoder = new TextEncoder();
+    const stream = new TransformStream();
+    const writer = stream.writable.getWriter();
 
-    // Tool 호출 루프 (최대 10회)
-    let loopCount = 0;
-    while (response.stop_reason === 'tool_use' && loopCount < 10) {
-      loopCount++;
-      console.log(`Tool 호출 #${loopCount}`);
+    // 상태 메시지 전송 함수
+    const sendStatus = async (status: string) => {
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'status', message: status })}\n\n`));
+    };
 
-      const toolCalls = response.content.filter((c: any) => c.type === 'tool_use');
-      const toolResults: any[] = [];
+    // 최종 응답 전송 함수
+    const sendFinal = async (content: any) => {
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'final', content: content })}\n\n`));
+      await writer.close();
+    };
 
-      for (const toolCall of toolCalls) {
-        const tc = toolCall as any;
-        console.log("Tool:", tc.name, "Input:", JSON.stringify(tc.input));
+    // 비동기로 처리
+    (async () => {
+      try {
+        await sendStatus('🤔 질문 분석 중...');
 
-        let result = '';
-        switch (tc.name) {
-          case 'search_sharepoint':
-            result = await searchSharePoint(tc.input.query, session.accessToken);
-            break;
-          case 'get_excel_sheets':
-            result = await getExcelSheets(tc.input.driveId, tc.input.itemId, session.accessToken);
-            break;
-          case 'read_excel_sheet':
-            result = await readExcelSheet(tc.input.driveId, tc.input.itemId, tc.input.sheetName, session.accessToken);
-            break;
-          case 'read_pdf_file':
-            result = await readPdfFile(tc.input.driveId, tc.input.itemId, session.accessToken);
-            break;
-          default:
-            result = JSON.stringify({ error: "알 수 없는 도구" });
+        let currentMessages = [...cleanedMessages];
+        let response = await anthropic.messages.create({
+          model: modelId,
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages: currentMessages,
+          tools: tools
+        });
+
+        let loopCount = 0;
+        while (response.stop_reason === 'tool_use' && loopCount < 10) {
+          loopCount++;
+
+          const toolCalls = response.content.filter((c: any) => c.type === 'tool_use');
+          const toolResults: any[] = [];
+
+          for (const toolCall of toolCalls) {
+            const tc = toolCall as any;
+            
+            // 진행 상태 전송
+            await sendStatus(getToolStatusMessage(tc.name, tc.input));
+
+            let result = '';
+            switch (tc.name) {
+              case 'search_sharepoint':
+                result = await searchSharePoint(tc.input.query, session.accessToken);
+                break;
+              case 'get_excel_sheets':
+                result = await getExcelSheets(tc.input.driveId, tc.input.itemId, session.accessToken);
+                break;
+              case 'read_excel_sheet':
+                result = await readExcelSheet(tc.input.driveId, tc.input.itemId, tc.input.sheetName, session.accessToken);
+                break;
+              case 'read_pdf_file':
+                result = await readPdfFile(tc.input.driveId, tc.input.itemId, session.accessToken);
+                break;
+              default:
+                result = JSON.stringify({ error: "알 수 없는 도구" });
+            }
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tc.id,
+              content: result
+            });
+          }
+
+          currentMessages = [
+            ...currentMessages,
+            { role: 'assistant', content: response.content },
+            { role: 'user', content: toolResults }
+          ];
+
+          await sendStatus('✨ 답변 생성 중...');
+
+          response = await anthropic.messages.create({
+            model: modelId,
+            max_tokens: 8192,
+            system: systemPrompt,
+            messages: currentMessages,
+            tools: tools
+          });
         }
 
-        console.log("Tool 결과 길이:", result.length);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tc.id,
-          content: result
-        });
+        await sendFinal(response.content);
+
+      } catch (error: any) {
+        console.error("에러:", error.message);
+        await sendFinal([{ type: 'text', text: '⚠️ 오류가 발생했습니다. 다시 시도해주세요.' }]);
       }
+    })();
 
-      currentMessages = [
-        ...currentMessages,
-        { role: 'assistant', content: response.content },
-        { role: 'user', content: toolResults }
-      ];
-
-      response = await anthropic.messages.create({
-        model: modelId,
-        max_tokens: 8192,
-        system: systemPrompt,
-        messages: currentMessages,
-        tools: tools
-      });
-    }
-
-    console.log("최종 응답, 루프 횟수:", loopCount);
-    return new Response(JSON.stringify({ content: response.content }));
+    return new Response(stream.readable, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
 
   } catch (error: any) {
     console.error("에러:", error.message);
     return new Response(JSON.stringify({ 
-      error: "오류가 발생했습니다. 채팅창을 닫고 새로 시작해주세요." 
+      error: "오류가 발생했습니다." 
     }), { status: 500 });
   }
 }
