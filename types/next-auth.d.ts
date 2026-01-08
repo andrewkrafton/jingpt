@@ -23,15 +23,3 @@ declare module "next-auth/jwt" {
     provider?: string;
   }
 }
-```
-
----
-
-**폴더 구조:**
-```
-jingpt/
-├── types/
-│   └── next-auth.d.ts   ← 새로 생성
-├── app/
-├── lib/
-└── ...
