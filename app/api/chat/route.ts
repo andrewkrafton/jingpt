@@ -6,72 +6,157 @@ export const runtime = 'nodejs';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
 
 async function searchSharePoint(query: string, accessToken: string) {
+  console.log("=== SharePoint 검색 시작 ===");
+  console.log("검색어:", query);
+  console.log("토큰 존재:", !!accessToken);
+  console.log("토큰 길이:", accessToken?.length || 0);
+  console.log("토큰 앞 50자:", accessToken?.slice(0, 50));
+
+  if (!accessToken) {
+    console.log("에러: 토큰이 없음");
+    return JSON.stringify({ error: "인증 토큰이 없습니다. 다시 로그인해주세요." });
+  }
+
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/search/query', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      headers: { 
+        'Authorization': `Bearer ${accessToken}`, 
+        'Content-Type': 'application/json' 
+      },
       body: JSON.stringify({
-        requests: [{ entityTypes: ['driveItem'], query: { queryString: query }, from: 0, size: 10 }]
+        requests: [{ 
+          entityTypes: ['driveItem'], 
+          query: { queryString: query }, 
+          from: 0, 
+          size: 10 
+        }]
       }),
     });
+
+    console.log("SharePoint 응답 상태:", res.status);
+    console.log("SharePoint 응답 OK:", res.ok);
+
     const data = await res.json();
-    if (data.error) throw new Error(`SharePoint API: ${data.error.message}`);
+    console.log("SharePoint 응답 데이터:", JSON.stringify(data).slice(0, 500));
+
+    if (!res.ok) {
+      console.log("SharePoint API 에러:", data);
+      return JSON.stringify({ 
+        error: `SharePoint API 에러 (${res.status})`, 
+        detail: data.error?.message || data 
+      });
+    }
+
     const hits = data.value?.[0]?.hitsContainers?.[0]?.hits;
-    if (!hits || hits.length === 0) return `[결과 없음] '${query}' 관련 파일을 찾지 못했습니다.`;
-    return JSON.stringify(hits.map((h: any) => ({ name: h.resource.name, id: h.resource.id, webUrl: h.resource.webUrl })));
-  } catch (e: any) {
-    return `[SharePoint 에러]: ${e.message}`;
+    
+    if (!hits || hits.length === 0) {
+      return JSON.stringify({ message: "검색 결과가 없습니다.", query });
+    }
+
+    return JSON.stringify(hits.map((h: any) => ({ 
+      name: h.resource.name, 
+      id: h.resource.id, 
+      webUrl: h.resource.webUrl 
+    })));
+
+  } catch (error: any) {
+    console.log("SharePoint 호출 중 예외 발생:", error.message);
+    return JSON.stringify({ error: "SharePoint 연결 실패", detail: error.message });
   }
 }
 
 export async function POST(req: Request) {
+  console.log("=== API 요청 시작 ===");
+  
   try {
     const session = await getServerSession(authOptions) as any;
-    if (!session || !session.accessToken) {
-      return new Response(JSON.stringify({ content: [{ type: 'text', text: "⚠️ 인증 정보가 없습니다. 로그아웃 후 다시 로그인해주세요." }] }), { status: 200 });
+    
+    console.log("세션 존재:", !!session);
+    console.log("세션 사용자:", session?.user?.email);
+    console.log("accessToken 존재:", !!session?.accessToken);
+    console.log("accessToken 타입:", typeof session?.accessToken);
+
+    if (!session) {
+      console.log("에러: 세션 없음");
+      return new Response(JSON.stringify({ 
+        error: "로그인이 필요합니다.",
+        needsAuth: true 
+      }), { status: 401 });
+    }
+
+    if (!session.accessToken) {
+      console.log("에러: accessToken 없음");
+      return new Response(JSON.stringify({ 
+        error: "Microsoft 인증 토큰이 없습니다. 로그아웃 후 다시 로그인해주세요.",
+        needsReauth: true 
+      }), { status: 401 });
     }
 
     const { messages } = await req.json();
+    console.log("메시지 수신:", messages?.length, "개");
 
-    // 🌟 2026년 기준 공식 모델 ID 적용
     const modelId = "claude-sonnet-4-5-20250929"; 
 
+    console.log("Claude API 첫 번째 호출 시작");
     const response = await anthropic.messages.create({
       model: modelId,
       max_tokens: 4096,
-      system: "당신은 크래프톤 지식베이스 'Chat진피티'입니다. 반드시 도구를 사용하여 검색하고 거짓말하지 마세요.",
-      messages: messages,
-      tools: [
-        { 
-          name: "search_sharepoint", 
-          description: "SharePoint 파일 검색", 
-          input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } 
+      system: "당신은 크래프톤 포트폴리오 관리 AI 어시스턴트입니다. SharePoint에서 파일을 검색할 때 search_sharepoint 도구를 사용하세요. 검색 결과를 바탕으로 정확하게 답변하고, 데이터가 없으면 없다고 솔직하게 말하세요.",
+      messages,
+      tools: [{
+        name: "search_sharepoint",
+        description: "SharePoint에서 파일을 검색합니다. Cap Table, 계약서, 재무제표 등을 찾을 때 사용합니다.",
+        input_schema: {
+          type: "object" as const,
+          properties: {
+            query: {
+              type: "string",
+              description: "검색할 키워드 (예: 'Ruckus Games Cap Table', 'EF Games 계약서')"
+            }
+          },
+          required: ["query"]
         }
-      ]
+      }]
     });
+
+    console.log("Claude 첫 번째 응답 stop_reason:", response.stop_reason);
 
     if (response.stop_reason === 'tool_use') {
       const toolCall = response.content.find((c: any) => c.type === 'tool_use') as any;
-      const toolResult = await searchSharePoint(toolCall.input.query, session.accessToken);
+      console.log("Tool 호출 감지:", toolCall?.name);
+      console.log("Tool 입력:", JSON.stringify(toolCall?.input));
 
+      const toolResult = await searchSharePoint(toolCall.input.query, session.accessToken);
+      console.log("Tool 결과 길이:", toolResult.length);
+
+      console.log("Claude API 두 번째 호출 시작");
       const finalResponse = await anthropic.messages.create({
         model: modelId,
         max_tokens: 4096,
+        system: "당신은 크래프톤 포트폴리오 관리 AI 어시스턴트입니다. 검색 결과를 바탕으로 사용자에게 유용한 정보를 제공하세요.",
         messages: [
           ...messages,
           { role: 'assistant', content: response.content },
           { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] }
         ]
       });
-      return new Response(JSON.stringify({ content: finalResponse.content }), { status: 200 });
+
+      console.log("Claude 두 번째 응답 완료");
+      return new Response(JSON.stringify({ content: finalResponse.content }));
     }
-    return new Response(JSON.stringify({ content: response.content }), { status: 200 });
+
+    console.log("Tool 호출 없이 직접 응답");
+    return new Response(JSON.stringify({ content: response.content }));
 
   } catch (error: any) {
-    // 💡 에러 발생 시 상세 내용을 채팅창에 텍스트로 반환합니다.
-    console.error("Chat API Error:", error);
+    console.error("=== API 에러 발생 ===");
+    console.error("에러 메시지:", error.message);
+    console.error("에러 스택:", error.stack);
+    
     return new Response(JSON.stringify({ 
-      content: [{ type: 'text', text: `❌ 에러 발생: ${error.message}` }] 
-    }), { status: 200 }); // 500 대신 200으로 보내서 내용을 확인합니다.
+      error: "처리 중 오류가 발생했습니다.",
+      detail: error.message 
+    }), { status: 500 });
   }
 }
