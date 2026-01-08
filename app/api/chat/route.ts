@@ -6,7 +6,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
 });
 
-// --- 도구 1: Confluence 검색 함수 ---
+// --- 검색 함수 (기존과 동일) ---
 async function searchConfluence(query: string) {
   const domain = process.env.ATLASSIAN_DOMAIN;
   const email = process.env.ATLASSIAN_EMAIL;
@@ -23,10 +23,8 @@ async function searchConfluence(query: string) {
   } catch (e) { return "Confluence 검색 중 오류 발생"; }
 }
 
-// --- 도구 2: SharePoint 검색 함수 (Microsoft Graph) ---
 async function searchSharePoint(query: string) {
   try {
-    // 1. 액세스 토큰 받기
     const tokenRes = await fetch(`https://login.microsoftonline.com/${process.env.AZURE_TENANT_ID}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -38,8 +36,6 @@ async function searchSharePoint(query: string) {
       }),
     });
     const { access_token } = await tokenRes.json();
-
-    // 2. 검색 수행 (Contracts 및 재무제표 범위)
     const searchRes = await fetch('https://graph.microsoft.com/v1.0/search/query', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
@@ -56,45 +52,59 @@ export async function POST(req: Request) {
   try {
     const { messages } = await req.json();
 
-    // 1. Claude에게 질문과 도구 목록 전달
+    // 1. 첫 번째 호출: 질문 분석 및 도구 사용 결정
     const response = await anthropic.messages.create({
-      model: "claude-3-5-sonnet-latest", // Enterprise 계정이므로 최신 모델 시도
+      model: "claude-3-5-sonnet-latest",
       max_tokens: 4096,
       system: `당신은 'Chat진피티'입니다. 크래프톤 포트폴리오사 지식베이스 전문 어시스턴트입니다.
-      - 별칭: Cyancook(Coconut horse), Arkrep(The Architects Republic), Cor3(NB Creative) 등 인식.
-      - 지분율은 SharePoint 최신 Cap Table을 검색하여 답변하세요.
-      - 반드시 검색 결과에 기반한 구체적인 정보와 출처 링크를 포함하세요.`,
+      - 지침: 지분율은 최신 Cap Table(SharePoint) 참조, ROFN/2PP는 BCA(SharePoint) 또는 Confluence 확인.
+      - 별칭: Cyancook(Coconut horse), Arkrep(The Architects Republic) 등 완벽히 인식.
+      - 반드시 검색 결과를 바탕으로 답변하고 출처를 명시할 것.`,
       messages: messages,
       tools: [
         {
           name: "search_confluence",
           description: "컨플루언스에서 회사 히스토리, PMI, 보드미팅 메모를 검색합니다.",
-          input_schema: { type: "object", properties: { query: { type: "string" } } }
+          input_schema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"]
+          }
         },
         {
           name: "search_sharepoint",
           description: "쉐어포인트에서 계약서(BCA), 재무제표, Cap Table 파일을 검색합니다.",
-          input_schema: { type: "object", properties: { query: { type: "string" } } }
+          input_schema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"]
+          }
         }
       ]
     });
 
-    // 2. Claude가 도구 사용을 요청했는지 확인 (Tool Use Loop)
+    // 2. 도구 사용 로직 처리
     if (response.stop_reason === 'tool_use') {
       const toolCall = response.content.find((c: any) => c.type === 'tool_use') as any;
-      let toolResult = "";
+      const toolResult = toolCall.name === 'search_confluence' 
+        ? await searchConfluence(toolCall.input.query)
+        : await searchSharePoint(toolCall.input.query);
 
-      if (toolCall.name === 'search_confluence') toolResult = await searchConfluence(toolCall.input.query);
-      if (toolCall.name === 'search_sharepoint') toolResult = await searchSharePoint(toolCall.input.query);
-
-      // 3. 검색 결과를 들고 다시 Claude에게 최종 답변 요청
       const finalResponse = await anthropic.messages.create({
         model: "claude-3-5-sonnet-latest",
         max_tokens: 4096,
+        system: "검색된 정보를 바탕으로 질문에 정확히 답변하세요.",
         messages: [
           ...messages,
           { role: 'assistant', content: response.content },
-          { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] }
+          {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolCall.id,
+              content: toolResult
+            }]
+          }
         ]
       });
       return new Response(JSON.stringify({ content: finalResponse.content }), { status: 200 });
