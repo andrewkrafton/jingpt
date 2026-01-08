@@ -30,6 +30,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -55,7 +56,7 @@ export default function ChatPage() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, statusMessage]);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -114,6 +115,7 @@ export default function ChatPage() {
     setMessages(newMessages);
     setInput('');
     setIsLoading(true);
+    setStatusMessage('🤔 질문 분석 중...');
 
     if (messages.length === 0) {
       setChats(prev => prev.map(c => 
@@ -128,15 +130,42 @@ export default function ChatPage() {
         body: JSON.stringify({ messages: newMessages }),
       });
 
-      const data = await response.json();
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        throw new Error('스트림을 읽을 수 없습니다.');
+      }
 
       let assistantContent = '';
-      if (data.error) {
-        assistantContent = `⚠️ ${data.error}`;
-      } else if (data.content && Array.isArray(data.content)) {
-        for (const block of data.content) {
-          if (block.type === 'text' && block.text) {
-            assistantContent += block.text;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'status') {
+                setStatusMessage(data.message);
+              } else if (data.type === 'final') {
+                // 최종 응답 처리
+                if (data.content && Array.isArray(data.content)) {
+                  for (const block of data.content) {
+                    if (block.type === 'text' && block.text) {
+                      assistantContent += block.text;
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              // JSON 파싱 에러 무시
+            }
           }
         }
       }
@@ -154,10 +183,11 @@ export default function ChatPage() {
       ));
 
     } catch (error) {
-      const errorMessage: Message = { role: 'assistant', content: '서버와 연결할 수 없습니다.' };
+      const errorMessage: Message = { role: 'assistant', content: '⚠️ 서버와 연결할 수 없습니다.' };
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      setStatusMessage('');
     }
   };
 
@@ -338,18 +368,22 @@ export default function ChatPage() {
                   )}
                 </div>
               ))}
+              
+              {/* 로딩 상태 - 실시간 진행상황 표시 */}
               {isLoading && (
                 <div className="flex gap-4 mb-6">
                   <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
                     <Bot size={18} className="text-white" />
                   </div>
-                  <div className="flex items-center gap-2 text-gray-400">
-                    <div className="flex gap-1">
-                      <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                      <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                      <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                  <div className="bg-[#1c2128] rounded-2xl px-4 py-3 border border-gray-700">
+                    <div className="flex items-center gap-3">
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                      </div>
+                      <span className="text-sm text-gray-300">{statusMessage}</span>
                     </div>
-                    <span className="text-sm">검색 중...</span>
                   </div>
                 </div>
               )}
