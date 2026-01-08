@@ -486,3 +486,21 @@ ${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
 
 ---
 
+**폴더 구조:**
+```
+app/
+├── api/
+│   ├── auth/
+│   │   └── atlassian/
+│   │       ├── route.ts (OAuth 시작)
+│   │       ├── callback/
+│   │       │   └── route.ts (콜백 처리)
+│   │       └── status/
+│   │           └── route.ts (연결 상태 확인)
+│   └── chat/
+│       └── route.ts
+├── login/
+│   └── page.tsx
+├── chat/
+│   └── page.tsx
+└── page.tsx
