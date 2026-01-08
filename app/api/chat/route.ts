@@ -5,13 +5,7 @@ import { authOptions } from "../../../lib/auth";
 export const runtime = 'nodejs';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
 
-// SharePoint 검색 경로 설정
-const SEARCH_PATHS = {
-  contracts: "sites/Corp.Dev.StrategyDiv/Shared Documents/1. M&A/1. Invested",
-  financials: "sites/Financialinstruments/Shared Documents/Accounting Team/1. 투자사재무제표"
-};
-
-// 검색어 분석해서 어디서 검색할지 결정
+// 검색어 분석
 function getSearchType(query: string): 'contracts' | 'financials' | 'both' {
   const q = query.toLowerCase();
   
@@ -26,10 +20,10 @@ function getSearchType(query: string): 'contracts' | 'financials' | 'both' {
   return 'both';
 }
 
-// 회사명 추출 (키워드 제거)
+// 회사명 추출
 function extractCompanyName(query: string): string {
   return query
-    .replace(/계약서|계약|재무제표|재무|cap\s*table|지분율|지분|financial|contract|bca|sha|rofn|2pp|퍼블리싱|pmi|확인|알려줘|찾아줘|검색|해줘/gi, '')
+    .replace(/계약서|계약|재무제표|재무|cap\s*table|지분율|지분|financial|contract|bca|sha|rofn|2pp|퍼블리싱|pmi|확인|알려줘|찾아줘|검색|해줘|을|를|의/gi, '')
     .trim();
 }
 
@@ -47,18 +41,27 @@ async function searchSharePoint(query: string, accessToken: string) {
   console.log("검색 타입:", searchType);
   console.log("회사명:", companyName);
 
-  const allResults: any[] = [];
-  const pathsToSearch = searchType === 'both' 
-    ? [SEARCH_PATHS.contracts, SEARCH_PATHS.financials]
-    : [SEARCH_PATHS[searchType]];
+  // site 필터 사용 (path 대신)
+  const siteFilters: Record<string, string> = {
+    contracts: "site:blueholestudio.sharepoint.com/sites/Corp.Dev.StrategyDiv",
+    financials: "site:blueholestudio.sharepoint.com/sites/Financialinstruments"
+  };
 
-  for (const searchPath of pathsToSearch) {
-    // path 필터로 특정 폴더만 검색
-    const searchQuery = companyName 
-      ? `"${companyName}" path:"${searchPath}"`
-      : `path:"${searchPath}"`;
+  const allResults: any[] = [];
+  
+  const sitesToSearch = searchType === 'both' 
+    ? ['contracts', 'financials'] as const
+    : [searchType] as const;
+
+  for (const siteType of sitesToSearch) {
+    const siteFilter = siteFilters[siteType];
     
-    console.log("실행 쿼리:", searchQuery);
+    // 회사명 + site 필터로 검색
+    const searchQuery = companyName 
+      ? `${companyName} ${siteFilter}`
+      : siteFilter;
+    
+    console.log(`[${siteType}] 실행 쿼리:`, searchQuery);
 
     try {
       const res = await fetch('https://graph.microsoft.com/v1.0/search/query', {
@@ -77,20 +80,20 @@ async function searchSharePoint(query: string, accessToken: string) {
         }),
       });
 
-      console.log("응답 상태:", res.status);
+      console.log(`[${siteType}] 응답 상태:`, res.status);
 
       if (!res.ok) {
         const errorData = await res.json();
-        console.log("API 에러:", JSON.stringify(errorData));
+        console.log(`[${siteType}] API 에러:`, JSON.stringify(errorData));
         continue;
       }
 
       const data = await res.json();
       const hits = data.value?.[0]?.hitsContainers?.[0]?.hits || [];
       
-      console.log("검색 결과 수:", hits.length);
+      console.log(`[${siteType}] 검색 결과 수:`, hits.length);
 
-      const sourceName = searchPath.includes('투자사재무제표') ? '재무제표' : '계약서';
+      const sourceName = siteType === 'financials' ? '재무제표' : '계약서';
 
       for (const hit of hits) {
         allResults.push({
@@ -101,7 +104,7 @@ async function searchSharePoint(query: string, accessToken: string) {
         });
       }
     } catch (error: any) {
-      console.log("검색 에러:", error.message);
+      console.log(`[${siteType}] 검색 에러:`, error.message);
     }
   }
 
@@ -115,21 +118,29 @@ async function searchSharePoint(query: string, accessToken: string) {
   return JSON.stringify(allResults);
 }
 
-// 메시지 정리 (tool_use 히스토리 제거)
+// 메시지 정리 - 단순 텍스트만 유지
 function cleanMessages(messages: any[]) {
-  return messages.map(msg => {
+  const cleaned: any[] = [];
+  
+  for (const msg of messages) {
+    let textContent = '';
+    
     if (typeof msg.content === 'string') {
-      return { role: msg.role, content: msg.content };
-    }
-    if (Array.isArray(msg.content)) {
-      const textContent = msg.content
+      textContent = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      textContent = msg.content
         .filter((block: any) => block.type === 'text')
         .map((block: any) => block.text)
         .join('\n');
-      return { role: msg.role, content: textContent || '' };
     }
-    return { role: msg.role, content: String(msg.content) };
-  }).filter(msg => msg.content);
+    
+    if (textContent.trim()) {
+      cleaned.push({ role: msg.role, content: textContent.trim() });
+    }
+  }
+  
+  // 마지막 5개 메시지만 유지 (히스토리 너무 길어지면 에러남)
+  return cleaned.slice(-5);
 }
 
 export async function POST(req: Request) {
@@ -149,15 +160,15 @@ export async function POST(req: Request) {
 
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
-    console.log("메시지 수:", cleanedMessages.length);
+    console.log("원본 메시지 수:", messages.length, "-> 정리 후:", cleanedMessages.length);
 
     const modelId = "claude-sonnet-4-5-20250929"; 
 
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
 ## 검색 가능한 데이터
-1. **계약서**: Corp.Dev.StrategyDiv > Contracts Package (BCA, SHA, SSA, ROFN, 2PP 등)
-2. **재무제표**: Financialinstruments > 투자사재무제표 (Cap Table, 지분율 등)
+1. **계약서**: Corp.Dev.StrategyDiv 사이트 (BCA, SHA, SSA, ROFN, 2PP 등)
+2. **재무제표**: Financialinstruments 사이트 (Cap Table, 지분율 등)
 
 ## 포트폴리오사 별칭
 - Coconut horse = Cyancook
@@ -170,12 +181,11 @@ export async function POST(req: Request) {
 - People Can Fly = PCF
 - Unknown Worlds = UW
 
-## 답변 원칙
-1. search_sharepoint 도구로 파일 검색
-2. 검색 결과의 webUrl 링크를 반드시 제공
-3. 지분율은 최신 분기 Cap Table 참조
-4. 출처를 명확히 표시
-5. 한국어로 친절하게 답변`;
+## 중요
+- 회사명 검색 시 "Ruckus"보다 "Ruckus Games"처럼 전체 이름 사용
+- search_sharepoint 도구로 파일 검색
+- 검색 결과의 webUrl 링크 반드시 제공
+- 한국어로 친절하게 답변`;
 
     const response = await anthropic.messages.create({
       model: modelId,
@@ -184,13 +194,13 @@ export async function POST(req: Request) {
       messages: cleanedMessages,
       tools: [{
         name: "search_sharepoint",
-        description: "SharePoint에서 포트폴리오사 관련 파일을 검색합니다. 계약서(BCA, SHA, ROFN, 2PP)나 재무제표(Cap Table, 지분율)를 찾습니다.",
+        description: "SharePoint에서 포트폴리오사 관련 파일을 검색합니다.",
         input_schema: {
           type: "object" as const,
           properties: {
             query: {
               type: "string",
-              description: "검색할 내용. 예: 'Ruckus Cap Table', 'Antistatic 계약서', 'D4N BCA'"
+              description: "검색할 내용. 회사 전체 이름 사용 권장. 예: 'Ruckus Games Cap Table', 'Antistatic Studios 계약서'"
             }
           },
           required: ["query"]
@@ -208,16 +218,16 @@ export async function POST(req: Request) {
     console.log("Tool 입력:", toolCall?.input);
 
     const toolResult = await searchSharePoint(toolCall.input.query, session.accessToken);
-    console.log("검색 결과 미리보기:", toolResult.slice(0, 500));
+    console.log("검색 결과:", toolResult.slice(0, 500));
 
     const finalResponse = await anthropic.messages.create({
       model: modelId,
       max_tokens: 4096,
-      system: `검색 결과를 보기 좋게 정리해주세요.
-- 각 파일의 이름과 링크(webUrl)를 클릭 가능하게 제공
-- 출처(재무제표/계약서)를 명시
-- 최신 파일을 우선 안내
-- 한국어로 친절하게 답변`,
+      system: `검색 결과를 정리해주세요.
+- 각 파일의 이름과 링크(webUrl) 제공
+- 출처(재무제표/계약서) 명시
+- 최신 파일 우선 안내
+- 한국어로 답변`,
       messages: [
         ...cleanedMessages,
         { role: 'assistant', content: response.content },
