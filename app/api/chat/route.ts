@@ -472,35 +472,3 @@ ${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
     return new Response(JSON.stringify({ error: "오류가 발생했습니다." }), { status: 500 });
   }
 }
-```
-
----
-
-**Step 7: Vercel 환경변수 추가**
-
-`NEXTAUTH_URL` 환경변수가 있는지 확인하고 없으면 추가:
-
-| Name | Value |
-|------|-------|
-| `NEXTAUTH_URL` | `https://jingpt-two.vercel.app` |
-
----
-
-**폴더 구조:**
-```
-app/
-├── api/
-│   ├── auth/
-│   │   └── atlassian/
-│   │       ├── route.ts (OAuth 시작)
-│   │       ├── callback/
-│   │       │   └── route.ts (콜백 처리)
-│   │       └── status/
-│   │           └── route.ts (연결 상태 확인)
-│   └── chat/
-│       └── route.ts
-├── login/
-│   └── page.tsx
-├── chat/
-│   └── page.tsx
-└── page.tsx
