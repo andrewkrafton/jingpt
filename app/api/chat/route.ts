@@ -9,7 +9,42 @@ export const maxDuration = 60;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
 
-// SharePoint 파일 검색
+// 허용된 폴더 경로
+const ALLOWED_PATHS = {
+  financial: [
+    'Financialinstruments',
+    '투자사재무제표',
+    'Accounting Team'
+  ],
+  contracts: [
+    'Corp.Dev.StrategyDiv',
+    'Contracts package',
+    'Contracts Package'
+  ]
+};
+
+// URL이 허용된 경로에 있는지 확인
+function isAllowedPath(webUrl: string): { allowed: boolean; category: string } {
+  const url = webUrl.toLowerCase();
+  
+  // 재무제표 경로 체크
+  for (const path of ALLOWED_PATHS.financial) {
+    if (url.includes(path.toLowerCase())) {
+      return { allowed: true, category: '재무제표/Cap Table' };
+    }
+  }
+  
+  // 계약서 경로 체크
+  for (const path of ALLOWED_PATHS.contracts) {
+    if (url.includes(path.toLowerCase())) {
+      return { allowed: true, category: '계약서/PMI' };
+    }
+  }
+  
+  return { allowed: false, category: '기타' };
+}
+
+// SharePoint 파일 검색 (필터링 적용)
 async function searchSharePoint(query: string, accessToken: string) {
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/search/query', {
@@ -23,7 +58,7 @@ async function searchSharePoint(query: string, accessToken: string) {
           entityTypes: ['driveItem'], 
           query: { queryString: query }, 
           from: 0, 
-          size: 15 
+          size: 25  // 더 많이 검색해서 필터링 후에도 결과가 있도록
         }]
       }),
     });
@@ -40,45 +75,52 @@ async function searchSharePoint(query: string, accessToken: string) {
       return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
     }
 
-    const results = hits.map((hit: any) => {
-      const webUrl = hit.resource.webUrl || '';
-      const name = hit.resource.name || '';
-      let source = '기타';
-      
-      if (webUrl.includes('Financialinstruments') || webUrl.includes('투자사재무제표')) {
-        source = '재무제표';
-      } else if (webUrl.includes('Corp.Dev.StrategyDiv') || webUrl.includes('Contracts')) {
-        source = '계약서/PMI';
-      }
+    // 허용된 경로의 파일만 필터링
+    const filteredResults = hits
+      .map((hit: any) => {
+        const webUrl = hit.resource.webUrl || '';
+        const name = hit.resource.name || '';
+        const pathCheck = isAllowedPath(webUrl);
+        
+        if (!pathCheck.allowed) {
+          return null;  // 허용되지 않은 경로는 제외
+        }
 
-      let fileType = 'unknown';
-      if (name.endsWith('.xlsx') || name.endsWith('.xls')) fileType = 'excel';
-      else if (name.endsWith('.pdf')) fileType = 'pdf';
-      else if (name.endsWith('.docx') || name.endsWith('.doc')) fileType = 'word';
+        let fileType = 'unknown';
+        if (name.endsWith('.xlsx') || name.endsWith('.xls')) fileType = 'excel';
+        else if (name.endsWith('.pdf')) fileType = 'pdf';
+        else if (name.endsWith('.docx') || name.endsWith('.doc')) fileType = 'word';
 
-      // URL 인코딩 - 공백 및 특수문자 처리
-      const encodedUrl = webUrl
-        .split('/')
-        .map((part: string, index: number) => {
-          // 프로토콜과 도메인 부분은 인코딩하지 않음
-          if (index < 3) return part;
-          return encodeURIComponent(part);
-        })
-        .join('/');
+        // URL 인코딩
+        const encodedUrl = webUrl
+          .split('/')
+          .map((part: string, index: number) => {
+            if (index < 3) return part;
+            return encodeURIComponent(part);
+          })
+          .join('/');
 
-      return {
-        name: name,
-        webUrl: encodedUrl,
-        driveId: hit.resource.parentReference?.driveId,
-        itemId: hit.resource.id,
-        lastModified: hit.resource.fileSystemInfo?.lastModifiedDateTime,
-        source: source,
-        fileType: fileType,
-        size: hit.resource.size
-      };
-    });
+        return {
+          name: name,
+          webUrl: encodedUrl,
+          driveId: hit.resource.parentReference?.driveId,
+          itemId: hit.resource.id,
+          lastModified: hit.resource.fileSystemInfo?.lastModifiedDateTime,
+          source: pathCheck.category,
+          fileType: fileType,
+          size: hit.resource.size
+        };
+      })
+      .filter((item: any) => item !== null);  // null 제거
 
-    return JSON.stringify(results);
+    if (filteredResults.length === 0) {
+      return JSON.stringify({ 
+        message: `"${query}" 검색 결과가 지정된 폴더(투자사재무제표, Contracts Package)에 없습니다.`,
+        hint: "검색어를 다르게 시도해보세요."
+      });
+    }
+
+    return JSON.stringify(filteredResults);
   } catch (error: any) {
     return JSON.stringify({ error: "검색 실패", detail: error.message });
   }
@@ -219,7 +261,7 @@ function cleanMessages(messages: any[]) {
   return cleaned.slice(-6);
 }
 
-// Tool 이름을 한글 상태 메시지로 변환
+// Tool 상태 메시지
 function getToolStatusMessage(toolName: string, input: any): string {
   switch (toolName) {
     case 'search_sharepoint':
@@ -268,17 +310,25 @@ export async function POST(req: Request) {
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
 ## 핵심 역할
-SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용을 읽어서** 구체적인 답변을 제공합니다.
+SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색하고 답변합니다.
 
-## 데이터 위치
-1. **재무제표/Cap Table/지분율**: Financialinstruments 사이트
-2. **계약서 (BCA, SHA, ROFN, 2PP 등)**: Corp.Dev.StrategyDiv > Contracts Package
+## 데이터 소스 (이 폴더만 검색됨!)
 
-## 사용 가능한 도구
-1. **search_sharepoint**: 파일 검색
-2. **get_excel_sheets**: Excel 시트 목록 조회
-3. **read_excel_sheet**: Excel 특정 시트 읽기
-4. **read_pdf_file**: PDF 파일 내용 읽기
+### 1. 재무제표/Cap Table/Compliance (Financialinstruments 사이트)
+- 경로: Financialinstruments > 투자사재무제표
+- 내용: 분기별 재무제표, Cap Table, Compliance Checklist
+- 파일 형식: 주로 Excel (.xlsx)
+
+### 2. 계약서 (Corp.Dev.StrategyDiv 사이트)
+- 경로: Corp.Dev.StrategyDiv > Contracts Package > [회사명]
+- 내용: BCA, SHA, Investors Rights Agreement, ROFN, 2PP 등
+- 파일 형식: 주로 PDF
+
+## 검색 팁
+- 지분율/Cap Table: "[회사명] cap table" 또는 "[회사명] CapTable"
+- 재무제표: "[회사명] financial" 또는 "[회사명] 재무"
+- 계약서: "[회사명] BCA" 또는 "[회사명] Investors Rights"
+- ROFN/2PP: "[회사명] BCA" (BCA 문서 안에 포함)
 
 ## 포트폴리오사 별칭
 - Ruckus Games Holdings, Inc. = Ruckus
@@ -288,30 +338,39 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
 - People Can Fly = PCF
 - Unknown Worlds = UW
 - Wolf Haus Games = WHG
+- Neon Giant = Neon Giant
+- EF Games = EF Games
+- Eleventh Hour Games = EHG
 
-## 답변 형식 (중요!)
+## 사용 가능한 도구
+1. **search_sharepoint**: 파일 검색 (지정된 폴더만 검색됨)
+2. **get_excel_sheets**: Excel 시트 목록 조회
+3. **read_excel_sheet**: Excel 특정 시트 읽기
+4. **read_pdf_file**: PDF 파일 내용 읽기
 
-### 출처 표시 규칙
-답변 마지막에 반드시 출처를 아래 형식으로 표시하세요. URL은 검색 결과에서 받은 webUrl을 그대로 사용하세요:
+## 답변 형식
+
+### 출처 표시 (필수)
+답변 마지막에 출처를 표시하세요:
 
 ---
 **📁 출처**
 - [파일명](webUrl) - 최종 수정일: YYYY-MM-DD
 
 ## 답변 원칙
-1. PDF, Excel 모두 직접 읽어서 구체적인 내용 제공
-2. 조항 내용, 숫자, 조건을 답변에 포함
-3. **출처는 반드시 클릭 가능한 마크다운 링크로 제공 (검색 결과의 webUrl 사용)**
+1. 검색 결과의 source 필드를 확인하여 올바른 폴더의 파일인지 확인
+2. PDF, Excel 모두 직접 읽어서 구체적인 내용 제공
+3. 출처는 반드시 클릭 가능한 마크다운 링크로 제공
 4. 한국어로 친절하고 상세하게 답변`;
 
     const tools = [
       {
         name: "search_sharepoint",
-        description: "SharePoint에서 파일을 검색합니다.",
+        description: "SharePoint의 지정된 폴더(투자사재무제표, Contracts Package)에서 파일을 검색합니다. 다른 폴더의 파일은 검색되지 않습니다.",
         input_schema: {
           type: "object" as const,
           properties: {
-            query: { type: "string", description: "검색어" }
+            query: { type: "string", description: "검색어. 예: 'Ruckus cap table', 'Antistatic BCA'" }
           },
           required: ["query"]
         }
