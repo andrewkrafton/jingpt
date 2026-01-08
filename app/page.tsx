@@ -48,15 +48,35 @@ export default function JingptPortal() {
       });
 
       const data = await response.json();
+      console.log("API 응답 데이터:", data); // 디버깅용
 
-      if (data && data.content && data.content[0] && data.content[0].text) {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.content[0].text }]);
-      } else if (data.error) {
-        setMessages(prev => [...prev, { role: 'assistant', content: `알림: ${data.error}` }]);
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: '답변을 불러오는 중 문제가 발생했습니다.' }]);
+      // 에러 체크
+      if (data.error) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ ${data.error}` }]);
+        return;
       }
+
+      // content 배열에서 텍스트 추출
+      let assistantMessage = '';
+      
+      if (data.content && Array.isArray(data.content)) {
+        // content 배열을 순회하면서 text 타입인 것들만 추출
+        for (const block of data.content) {
+          if (block.type === 'text' && block.text) {
+            assistantMessage += block.text;
+          }
+        }
+      }
+
+      if (assistantMessage) {
+        setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
+      } else {
+        console.log("텍스트를 찾을 수 없음. 전체 응답:", JSON.stringify(data));
+        setMessages(prev => [...prev, { role: 'assistant', content: '응답을 처리하는 중 문제가 발생했습니다. 다시 시도해주세요.' }]);
+      }
+
     } catch (error) {
+      console.error("API 호출 에러:", error);
       setMessages(prev => [...prev, { role: 'assistant', content: '서버와 연결할 수 없습니다. 다시 시도해주세요.' }]);
     } finally {
       setIsLoading(false);
@@ -159,7 +179,7 @@ export default function JingptPortal() {
         </div>
       </main>
 
-      {/* 채팅 모달은 이전과 동일 (생략하지 않고 포함) */}
+      {/* 채팅 모달 */}
       {isChatOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-[#0d1117] w-full max-w-4xl h-[80vh] rounded-2xl border border-gray-700 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
