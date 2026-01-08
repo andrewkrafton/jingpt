@@ -6,7 +6,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
 });
 
-// --- 검색 함수 (기능 유지) ---
+// --- 검색 엔진 함수 (Confluence & SharePoint) ---
 async function searchConfluence(query: string) {
   const domain = process.env.ATLASSIAN_DOMAIN;
   const email = process.env.ATLASSIAN_EMAIL;
@@ -17,7 +17,7 @@ async function searchConfluence(query: string) {
       { headers: { 'Authorization': `Basic ${auth}`, 'Accept': 'application/json' } });
     const data = await res.json();
     return data.results.map((r: any) => `[제목: ${r.title}] (URL: https://${domain}/wiki${r._links.webui})`).join('\n');
-  } catch (e) { return "Confluence 검색 중 오류 발생"; }
+  } catch (e) { return "Confluence 검색 오류"; }
 }
 
 async function searchSharePoint(query: string) {
@@ -40,40 +40,40 @@ async function searchSharePoint(query: string) {
     });
     const searchData = await searchRes.json();
     return JSON.stringify(searchData.value[0]?.hitsContainers[0]?.hits?.map((h: any) => h.resource.name) || "검색 결과 없음");
-  } catch (e) { return "SharePoint 검색 중 오류 발생"; }
+  } catch (e) { return "SharePoint 검색 오류"; }
 }
 
 export async function POST(req: Request) {
   try {
     const { messages } = await req.json();
 
+    // 💡 404 에러 방지를 위해 확실히 작동하는 Haiku 모델 사용
     const response = await anthropic.messages.create({
-      // 💡 404 에러 해결을 위해 가장 안정적인 모델명으로 변경합니다.
-      model: "claude-3-sonnet-20240229", 
+      model: "claude-3-haiku-20240307", 
       max_tokens: 4096,
       system: `당신은 'Chat진피티'이며, 크래프톤 포트폴리오사 지식베이스 전문 어시스턴트입니다.
 
-## 데이터 소스 가이드
-1. Confluence: Post-Management (히스토리, PMI, 보드미팅, 보험 정보)
-2. SharePoint: Contracts Package (계약서, BCA), 투자사 재무제표 (분기별 재무제표 및 Cap Table)
+## 데이터 소스 범위
+1. Confluence 위키 (Post-Management): 히스토리, PMI 현황, 보드미팅 메모, 보험 정보.
+2. SharePoint (Contracts Package): 계약서(BCA), PMI 문서.
+3. SharePoint (투자사 재무제표): 분기별 재무제표 및 Cap Table.
 
-## 핵심 별칭 매핑
-- Coconut horse = Cyancook, The Architects Republic = Arkrep, NB Creative = Cor3
-- PCF = People Can Fly, UW = Unknown Worlds 등 인식하여 검색하세요.
+## 별칭 및 약자 정보
+- Coconut horse = Cyancook, The Architects Republic = Arkrep, NB Creative = Cor3.
+- PCF = People Can Fly, UW = Unknown Worlds.
 
 ## 검색 가이드
-- 지분율: SharePoint > 투자사 재무제표 > [최신 분기] > Cap Table (반드시 최신 데이터 확인)
-- ROFN/2PP/우선협상권: Confluence 2PP 페이지 또는 SharePoint BCA 계약서 확인.
-- 보험(D&O): Confluence 전용 페이지(ID: 651729531) 확인.
-- 투자 정보: 회사별 위키 페이지 상단 기본 정보 참조.
+- **지분율**: SharePoint 투자사 재무제표 내 '최신 분기' Cap Table을 최우선 검색.
+- **ROFN/2PP**: Confluence 스튜디오 위키 및 2PP 페이지 확인 후 SharePoint BCA 계약서 참조.
+- **보험(D&O)**: Confluence 전용 페이지(ID: 651729531) 확인.
 
 ## 답변 원칙
-- 모든 답변에 출처(Confluence 링크 또는 SharePoint 파일 경로)를 반드시 포함하세요.
-- 불확실한 정보는 추측하지 말고 찾을 수 없다고 답변하세요.`,
+- 반드시 출처(Confluence 링크 또는 SharePoint 파일명)를 답변에 포함하세요.
+- 숫자는 정확하게, 답변은 간결하고 명확하게 작성하세요.`,
       messages: messages,
       tools: [
-        { name: "search_confluence", description: "컨플루언스 지식 검색", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-        { name: "search_sharepoint", description: "쉐어포인트 파일 검색", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }
+        { name: "search_confluence", description: "사내 지식 검색", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+        { name: "search_sharepoint", description: "파일 및 재무 데이터 검색", input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }
       ]
     });
 
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
       const toolResult = toolCall.name === 'search_confluence' ? await searchConfluence(toolCall.input.query) : await searchSharePoint(toolCall.input.query);
 
       const finalResponse = await anthropic.messages.create({
-        model: "claude-3-sonnet-20240229",
+        model: "claude-3-haiku-20240307",
         max_tokens: 4096,
         messages: [
           ...messages,
