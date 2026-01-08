@@ -56,9 +56,19 @@ async function searchSharePoint(query: string, accessToken: string) {
       else if (name.endsWith('.pdf')) fileType = 'pdf';
       else if (name.endsWith('.docx') || name.endsWith('.doc')) fileType = 'word';
 
+      // URL 인코딩 - 공백 및 특수문자 처리
+      const encodedUrl = webUrl
+        .split('/')
+        .map((part: string, index: number) => {
+          // 프로토콜과 도메인 부분은 인코딩하지 않음
+          if (index < 3) return part;
+          return encodeURIComponent(part);
+        })
+        .join('/');
+
       return {
         name: name,
-        webUrl: webUrl,
+        webUrl: encodedUrl,
         driveId: hit.resource.parentReference?.driveId,
         itemId: hit.resource.id,
         lastModified: hit.resource.fileSystemInfo?.lastModifiedDateTime,
@@ -229,7 +239,6 @@ export async function POST(req: Request) {
   try {
     const session = await getServerSession(authOptions) as any;
     
-    // 세션 체크
     if (!session) {
       return new Response(JSON.stringify({ 
         error: "로그인이 필요합니다. 다시 로그인해주세요.",
@@ -237,7 +246,6 @@ export async function POST(req: Request) {
       }), { status: 401 });
     }
 
-    // 토큰 갱신 실패 체크
     if (session.error === "RefreshAccessTokenError") {
       return new Response(JSON.stringify({ 
         error: "세션이 만료되었습니다. 로그아웃 후 다시 로그인해주세요.",
@@ -245,7 +253,6 @@ export async function POST(req: Request) {
       }), { status: 401 });
     }
 
-    // 액세스 토큰 체크
     if (!session.accessToken) {
       return new Response(JSON.stringify({ 
         error: "인증 토큰이 없습니다. 로그아웃 후 다시 로그인해주세요.",
@@ -280,27 +287,21 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
 - Gardens Interactive = Gardens
 - People Can Fly = PCF
 - Unknown Worlds = UW
+- Wolf Haus Games = WHG
 
 ## 답변 형식 (중요!)
 
 ### 출처 표시 규칙
-답변 마지막에 반드시 출처를 아래 형식으로 표시하세요:
+답변 마지막에 반드시 출처를 아래 형식으로 표시하세요. URL은 검색 결과에서 받은 webUrl을 그대로 사용하세요:
 
 ---
 **📁 출처**
-- [파일명.pdf](SharePoint URL) - 최종 수정일: YYYY-MM-DD
-- [파일명.xlsx](SharePoint URL) - 최종 수정일: YYYY-MM-DD
-
-### 예시:
----
-**📁 출처**
-- [Ruckus Games - BCA.pdf](https://blueholestudio.sharepoint.com/sites/Corp.Dev.StrategyDiv/...) - 최종 수정일: 2025-06-15
-- [Ruckus_CapTable.xlsx](https://blueholestudio.sharepoint.com/sites/Financialinstruments/...) - 최종 수정일: 2025-12-31
+- [파일명](webUrl) - 최종 수정일: YYYY-MM-DD
 
 ## 답변 원칙
 1. PDF, Excel 모두 직접 읽어서 구체적인 내용 제공
 2. 조항 내용, 숫자, 조건을 답변에 포함
-3. **출처는 반드시 클릭 가능한 마크다운 링크로 제공**
+3. **출처는 반드시 클릭 가능한 마크다운 링크로 제공 (검색 결과의 webUrl 사용)**
 4. 한국어로 친절하고 상세하게 답변`;
 
     const tools = [
@@ -354,7 +355,6 @@ SharePoint에서 포트폴리오사 문서를 검색하고, **반드시 내용�
       }
     ];
 
-    // 스트리밍 응답 설정
     const encoder = new TextEncoder();
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
