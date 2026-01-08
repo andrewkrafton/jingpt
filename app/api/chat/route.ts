@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/lib/auth"; // 경로를 lib으로 변경
+import { authOptions } from "../../../lib/auth"; // 단축키 대신 직접 경로 입력
 
 export const runtime = 'nodejs';
 
