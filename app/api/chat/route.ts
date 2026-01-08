@@ -9,57 +9,31 @@ export const maxDuration = 60;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
 
-// 허용된 폴더 경로
+// 허용된 SharePoint 폴더 경로
 const ALLOWED_PATHS = {
-  financial: [
-    'Financialinstruments',
-    '투자사재무제표',
-    'Accounting Team'
-  ],
-  contracts: [
-    'Corp.Dev.StrategyDiv',
-    'Contracts package',
-    'Contracts Package'
-  ]
+  financial: ['Financialinstruments', '투자사재무제표', 'Accounting Team'],
+  contracts: ['Corp.Dev.StrategyDiv', 'Contracts package', 'Contracts Package']
 };
 
-// URL이 허용된 경로에 있는지 확인
 function isAllowedPath(webUrl: string): { allowed: boolean; category: string } {
   const url = webUrl.toLowerCase();
-  
-  // 재무제표 경로 체크
   for (const path of ALLOWED_PATHS.financial) {
-    if (url.includes(path.toLowerCase())) {
-      return { allowed: true, category: '재무제표/Cap Table' };
-    }
+    if (url.includes(path.toLowerCase())) return { allowed: true, category: '재무제표/Cap Table' };
   }
-  
-  // 계약서 경로 체크
   for (const path of ALLOWED_PATHS.contracts) {
-    if (url.includes(path.toLowerCase())) {
-      return { allowed: true, category: '계약서/PMI' };
-    }
+    if (url.includes(path.toLowerCase())) return { allowed: true, category: '계약서/PMI' };
   }
-  
   return { allowed: false, category: '기타' };
 }
 
-// SharePoint 파일 검색 (필터링 적용)
+// SharePoint 파일 검색
 async function searchSharePoint(query: string, accessToken: string) {
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/search/query', {
       method: 'POST',
-      headers: { 
-        'Authorization': `Bearer ${accessToken}`, 
-        'Content-Type': 'application/json' 
-      },
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        requests: [{ 
-          entityTypes: ['driveItem'], 
-          query: { queryString: query }, 
-          from: 0, 
-          size: 25  // 더 많이 검색해서 필터링 후에도 결과가 있도록
-        }]
+        requests: [{ entityTypes: ['driveItem'], query: { queryString: query }, from: 0, size: 25 }]
       }),
     });
 
@@ -71,58 +45,144 @@ async function searchSharePoint(query: string, accessToken: string) {
     const data = await res.json();
     const hits = data.value?.[0]?.hitsContainers?.[0]?.hits || [];
 
-    if (hits.length === 0) {
-      return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
-    }
+    if (hits.length === 0) return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
 
-    // 허용된 경로의 파일만 필터링
     const filteredResults = hits
       .map((hit: any) => {
         const webUrl = hit.resource.webUrl || '';
         const name = hit.resource.name || '';
         const pathCheck = isAllowedPath(webUrl);
-        
-        if (!pathCheck.allowed) {
-          return null;  // 허용되지 않은 경로는 제외
-        }
+        if (!pathCheck.allowed) return null;
 
         let fileType = 'unknown';
         if (name.endsWith('.xlsx') || name.endsWith('.xls')) fileType = 'excel';
         else if (name.endsWith('.pdf')) fileType = 'pdf';
         else if (name.endsWith('.docx') || name.endsWith('.doc')) fileType = 'word';
 
-        // URL 인코딩
-        const encodedUrl = webUrl
-          .split('/')
-          .map((part: string, index: number) => {
-            if (index < 3) return part;
-            return encodeURIComponent(part);
-          })
-          .join('/');
+        const encodedUrl = webUrl.split('/').map((part: string, index: number) => {
+          if (index < 3) return part;
+          return encodeURIComponent(part);
+        }).join('/');
 
         return {
-          name: name,
-          webUrl: encodedUrl,
-          driveId: hit.resource.parentReference?.driveId,
-          itemId: hit.resource.id,
-          lastModified: hit.resource.fileSystemInfo?.lastModifiedDateTime,
-          source: pathCheck.category,
-          fileType: fileType,
-          size: hit.resource.size
+          name, webUrl: encodedUrl, driveId: hit.resource.parentReference?.driveId,
+          itemId: hit.resource.id, lastModified: hit.resource.fileSystemInfo?.lastModifiedDateTime,
+          source: pathCheck.category, fileType, size: hit.resource.size
         };
       })
-      .filter((item: any) => item !== null);  // null 제거
+      .filter((item: any) => item !== null);
 
     if (filteredResults.length === 0) {
-      return JSON.stringify({ 
-        message: `"${query}" 검색 결과가 지정된 폴더(투자사재무제표, Contracts Package)에 없습니다.`,
-        hint: "검색어를 다르게 시도해보세요."
-      });
+      return JSON.stringify({ message: `"${query}" 검색 결과가 지정된 폴더에 없습니다.` });
     }
-
     return JSON.stringify(filteredResults);
   } catch (error: any) {
     return JSON.stringify({ error: "검색 실패", detail: error.message });
+  }
+}
+
+// Confluence Cloud ID 가져오기
+async function getConfluenceCloudId(accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch('https://api.atlassian.com/oauth/token/accessible-resources', {
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const sites = await res.json();
+    // krafton 사이트 찾기
+    const kraftonSite = sites.find((s: any) => s.url.includes('krafton')) || sites[0];
+    return kraftonSite?.id || null;
+  } catch (error) {
+    console.error("Cloud ID 조회 실패:", error);
+    return null;
+  }
+}
+
+// Confluence 검색
+async function searchConfluence(query: string, accessToken: string) {
+  try {
+    const cloudId = await getConfluenceCloudId(accessToken);
+    if (!cloudId) {
+      return JSON.stringify({ error: "Confluence 연결 실패. 다시 로그인해주세요." });
+    }
+
+    const cql = encodeURIComponent(`text ~ "${query}" OR title ~ "${query}"`);
+    const res = await fetch(
+      `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=10&expand=body.storage,space,version`,
+      { headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } }
+    );
+
+    if (!res.ok) {
+      const error = await res.json();
+      return JSON.stringify({ error: "Confluence 검색 실패", detail: error.message });
+    }
+
+    const data = await res.json();
+    const results = (data.results || []).map((page: any) => ({
+      id: page.id,
+      title: page.title,
+      type: page.type,
+      space: page.space?.name || '',
+      spaceKey: page.space?.key || '',
+      url: `https://krafton.atlassian.net/wiki${page._links?.webui || ''}`,
+      lastModified: page.version?.when,
+      excerpt: page.body?.storage?.value?.replace(/<[^>]*>/g, ' ').slice(0, 300) || ''
+    }));
+
+    if (results.length === 0) {
+      return JSON.stringify({ message: `Confluence에서 "${query}" 검색 결과가 없습니다.` });
+    }
+    return JSON.stringify(results);
+  } catch (error: any) {
+    return JSON.stringify({ error: "Confluence 검색 실패", detail: error.message });
+  }
+}
+
+// Confluence 페이지 내용 읽기
+async function readConfluencePage(pageId: string, accessToken: string) {
+  try {
+    const cloudId = await getConfluenceCloudId(accessToken);
+    if (!cloudId) {
+      return JSON.stringify({ error: "Confluence 연결 실패" });
+    }
+
+    const res = await fetch(
+      `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/${pageId}?expand=body.storage,space,version`,
+      { headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } }
+    );
+
+    if (!res.ok) {
+      return JSON.stringify({ error: "페이지 읽기 실패" });
+    }
+
+    const page = await res.json();
+    
+    // HTML 태그 제거하고 텍스트만 추출
+    let content = page.body?.storage?.value || '';
+    content = content
+      .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, '[매크로]')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // 너무 길면 자르기
+    if (content.length > 10000) {
+      content = content.slice(0, 10000) + '\n\n... (문서가 길어 일부만 표시됨)';
+    }
+
+    return JSON.stringify({
+      title: page.title,
+      space: page.space?.name,
+      url: `https://krafton.atlassian.net/wiki${page._links?.webui || ''}`,
+      lastModified: page.version?.when,
+      content: content
+    });
+  } catch (error: any) {
+    return JSON.stringify({ error: "페이지 읽기 실패", detail: error.message });
   }
 }
 
@@ -133,15 +193,12 @@ async function getExcelSheets(driveId: string, itemId: string, accessToken: stri
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/worksheets`,
       { headers: { 'Authorization': `Bearer ${accessToken}` } }
     );
-
     if (!res.ok) {
       const error = await res.json();
       return JSON.stringify({ error: "시트 목록 조회 실패", detail: error.error?.message });
     }
-
     const data = await res.json();
-    const sheets = (data.value || []).map((s: any) => s.name);
-    return JSON.stringify({ sheets: sheets });
+    return JSON.stringify({ sheets: (data.value || []).map((s: any) => s.name) });
   } catch (error: any) {
     return JSON.stringify({ error: "시트 목록 조회 실패", detail: error.message });
   }
@@ -154,34 +211,22 @@ async function readExcelSheet(driveId: string, itemId: string, sheetName: string
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/workbook/worksheets('${encodeURIComponent(sheetName)}')/usedRange`,
       { headers: { 'Authorization': `Bearer ${accessToken}` } }
     );
-
     if (!res.ok) {
       const error = await res.json();
       return JSON.stringify({ error: "시트 읽기 실패", detail: error.error?.message });
     }
-
     const data = await res.json();
     const values = data.values || [];
-
     const maxRows = Math.min(values.length, 100);
     let content = '';
-    
     for (let i = 0; i < maxRows; i++) {
       const row = values[i];
       if (row && row.some((cell: any) => cell !== null && cell !== '')) {
         content += row.map((cell: any) => cell ?? '').join(' | ') + '\n';
       }
     }
-
-    if (values.length > 100) {
-      content += `\n... (총 ${values.length}행 중 100행만 표시)`;
-    }
-
-    return JSON.stringify({ 
-      sheetName: sheetName,
-      totalRows: values.length,
-      content: content
-    });
+    if (values.length > 100) content += `\n... (총 ${values.length}행 중 100행만 표시)`;
+    return JSON.stringify({ sheetName, totalRows: values.length, content });
   } catch (error: any) {
     return JSON.stringify({ error: "시트 읽기 실패", detail: error.message });
   }
@@ -194,50 +239,26 @@ async function readPdfFile(driveId: string, itemId: string, accessToken: string)
       `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`,
       { headers: { 'Authorization': `Bearer ${accessToken}` } }
     );
-
     if (!downloadRes.ok) {
       const infoRes = await fetch(
         `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}`,
         { headers: { 'Authorization': `Bearer ${accessToken}` } }
       );
-      
       if (infoRes.ok) {
         const info = await infoRes.json();
-        return JSON.stringify({ 
-          error: "PDF 다운로드 실패",
-          fileName: info.name,
-          webUrl: info.webUrl
-        });
+        return JSON.stringify({ error: "PDF 다운로드 실패", fileName: info.name, webUrl: info.webUrl });
       }
       return JSON.stringify({ error: "PDF 파일을 다운로드할 수 없습니다." });
     }
-
     const arrayBuffer = await downloadRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const pdfData = await pdf(buffer);
-
-    let text = pdfData.text || '';
-    text = text.replace(/\s+/g, ' ').trim();
-    
-    const maxLength = 15000;
-    const truncated = text.length > maxLength;
-    if (truncated) {
-      text = text.slice(0, maxLength) + '\n\n... (문서가 길어 일부만 표시됨)';
-    }
-
-    return JSON.stringify({ 
-      success: true,
-      numPages: pdfData.numpages,
-      textLength: pdfData.text.length,
-      content: text,
-      truncated: truncated
-    });
-
+    let text = (pdfData.text || '').replace(/\s+/g, ' ').trim();
+    const truncated = text.length > 15000;
+    if (truncated) text = text.slice(0, 15000) + '\n\n... (문서가 길어 일부만 표시됨)';
+    return JSON.stringify({ success: true, numPages: pdfData.numpages, content: text, truncated });
   } catch (error: any) {
-    return JSON.stringify({ 
-      error: "PDF 파싱 실패", 
-      detail: error.message
-    });
+    return JSON.stringify({ error: "PDF 파싱 실패", detail: error.message });
   }
 }
 
@@ -246,17 +267,11 @@ function cleanMessages(messages: any[]) {
   const cleaned: any[] = [];
   for (const msg of messages) {
     let textContent = '';
-    if (typeof msg.content === 'string') {
-      textContent = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      textContent = msg.content
-        .filter((block: any) => block.type === 'text')
-        .map((block: any) => block.text)
-        .join('\n');
+    if (typeof msg.content === 'string') textContent = msg.content;
+    else if (Array.isArray(msg.content)) {
+      textContent = msg.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
     }
-    if (textContent.trim()) {
-      cleaned.push({ role: msg.role, content: textContent.trim() });
-    }
+    if (textContent.trim()) cleaned.push({ role: msg.role, content: textContent.trim() });
   }
   return cleaned.slice(-6);
 }
@@ -264,16 +279,13 @@ function cleanMessages(messages: any[]) {
 // Tool 상태 메시지
 function getToolStatusMessage(toolName: string, input: any): string {
   switch (toolName) {
-    case 'search_sharepoint':
-      return `🔍 SharePoint에서 "${input.query}" 검색 중...`;
-    case 'get_excel_sheets':
-      return `📊 Excel 파일 구조 분석 중...`;
-    case 'read_excel_sheet':
-      return `📈 "${input.sheetName}" 시트 데이터 읽는 중...`;
-    case 'read_pdf_file':
-      return `📄 PDF 문서 내용 분석 중...`;
-    default:
-      return `⏳ 처리 중...`;
+    case 'search_sharepoint': return `🔍 SharePoint에서 "${input.query}" 검색 중...`;
+    case 'search_confluence': return `📚 Confluence에서 "${input.query}" 검색 중...`;
+    case 'read_confluence_page': return `📖 Confluence 문서 읽는 중...`;
+    case 'get_excel_sheets': return `📊 Excel 파일 구조 분석 중...`;
+    case 'read_excel_sheet': return `📈 "${input.sheetName}" 시트 읽는 중...`;
+    case 'read_pdf_file': return `📄 PDF 문서 분석 중...`;
+    default: return `⏳ 처리 중...`;
   }
 }
 
@@ -282,137 +294,96 @@ export async function POST(req: Request) {
     const session = await getServerSession(authOptions) as any;
     
     if (!session) {
-      return new Response(JSON.stringify({ 
-        error: "로그인이 필요합니다. 다시 로그인해주세요.",
-        action: "relogin"
-      }), { status: 401 });
+      return new Response(JSON.stringify({ error: "로그인이 필요합니다." }), { status: 401 });
     }
-
     if (session.error === "RefreshAccessTokenError") {
-      return new Response(JSON.stringify({ 
-        error: "세션이 만료되었습니다. 로그아웃 후 다시 로그인해주세요.",
-        action: "relogin"
-      }), { status: 401 });
+      return new Response(JSON.stringify({ error: "세션이 만료되었습니다. 다시 로그인해주세요." }), { status: 401 });
+    }
+    if (!session.accessToken) {
+      return new Response(JSON.stringify({ error: "SharePoint 인증이 필요합니다." }), { status: 401 });
     }
 
-    if (!session.accessToken) {
-      return new Response(JSON.stringify({ 
-        error: "인증 토큰이 없습니다. 로그아웃 후 다시 로그인해주세요.",
-        action: "relogin"
-      }), { status: 401 });
-    }
+    const hasConfluence = !!session.atlassianAccessToken;
 
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
-
     const modelId = "claude-opus-4-5-20251101"; 
 
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
 ## 핵심 역할
-SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색하고 답변합니다.
+SharePoint와 Confluence에서 포트폴리오사 문서를 검색하고 답변합니다.
 
-## 데이터 소스 (이 폴더만 검색됨!)
+## 데이터 소스
 
-### 1. 재무제표/Cap Table/Compliance (Financialinstruments 사이트)
-- 경로: Financialinstruments > 투자사재무제표
-- 내용: 분기별 재무제표, Cap Table, Compliance Checklist
-- 파일 형식: 주로 Excel (.xlsx)
+### 1. SharePoint (재무제표/계약서)
+- **재무제표/Cap Table**: Financialinstruments > 투자사재무제표
+- **계약서**: Corp.Dev.StrategyDiv > Contracts Package
 
-### 2. 계약서 (Corp.Dev.StrategyDiv 사이트)
-- 경로: Corp.Dev.StrategyDiv > Contracts Package > [회사명]
-- 내용: BCA, SHA, Investors Rights Agreement, ROFN, 2PP 등
-- 파일 형식: 주로 PDF
+### 2. Confluence (위키) ${hasConfluence ? '✅ 연결됨' : '❌ 연결 안됨'}
+- 포트폴리오사 정보, 회의록, 프로젝트 문서 등
+${!hasConfluence ? '- ⚠️ Confluence 검색이 불가능합니다. 위키 관련 질문에 답변할 수 없습니다.' : ''}
 
-## 검색 팁
-- 지분율/Cap Table: "[회사명] cap table" 또는 "[회사명] CapTable"
-- 재무제표: "[회사명] financial" 또는 "[회사명] 재무"
-- 계약서: "[회사명] BCA" 또는 "[회사명] Investors Rights"
-- ROFN/2PP: "[회사명] BCA" (BCA 문서 안에 포함)
+## 사용 가능한 도구
+1. **search_sharepoint**: SharePoint 파일 검색
+2. **get_excel_sheets**: Excel 시트 목록 조회
+3. **read_excel_sheet**: Excel 시트 읽기
+4. **read_pdf_file**: PDF 파일 읽기
+${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
+6. **read_confluence_page**: Confluence 페이지 내용 읽기` : ''}
 
 ## 포트폴리오사 별칭
-- Ruckus Games Holdings, Inc. = Ruckus
-- Antistatic Studios Inc. = Antistatic
+- Ruckus Games = Ruckus
+- Antistatic Studios = Antistatic
 - Day 4 Night = D4N
-- Gardens Interactive = Gardens
 - People Can Fly = PCF
 - Unknown Worlds = UW
 - Wolf Haus Games = WHG
-- Neon Giant = Neon Giant
-- EF Games = EF Games
-- Eleventh Hour Games = EHG
-
-## 사용 가능한 도구
-1. **search_sharepoint**: 파일 검색 (지정된 폴더만 검색됨)
-2. **get_excel_sheets**: Excel 시트 목록 조회
-3. **read_excel_sheet**: Excel 특정 시트 읽기
-4. **read_pdf_file**: PDF 파일 내용 읽기
-
-## 답변 형식
-
-### 출처 표시 (필수)
-답변 마지막에 출처를 표시하세요:
-
----
-**📁 출처**
-- [파일명](webUrl) - 최종 수정일: YYYY-MM-DD
 
 ## 답변 원칙
-1. 검색 결과의 source 필드를 확인하여 올바른 폴더의 파일인지 확인
-2. PDF, Excel 모두 직접 읽어서 구체적인 내용 제공
-3. 출처는 반드시 클릭 가능한 마크다운 링크로 제공
-4. 한국어로 친절하고 상세하게 답변`;
+1. 질문 유형에 따라 적절한 데이터 소스 선택
+   - 지분율/재무/계약서 → SharePoint
+   - 회사 정보/회의록/프로젝트 → Confluence
+2. 파일/문서 내용을 직접 읽어서 구체적인 답변 제공
+3. 출처는 클릭 가능한 마크다운 링크로 제공
+4. 한국어로 친절하게 답변`;
 
-    const tools = [
+    const tools: any[] = [
       {
         name: "search_sharepoint",
-        description: "SharePoint의 지정된 폴더(투자사재무제표, Contracts Package)에서 파일을 검색합니다. 다른 폴더의 파일은 검색되지 않습니다.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            query: { type: "string", description: "검색어. 예: 'Ruckus cap table', 'Antistatic BCA'" }
-          },
-          required: ["query"]
-        }
+        description: "SharePoint에서 파일 검색 (재무제표, Cap Table, 계약서)",
+        input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       },
       {
         name: "get_excel_sheets",
-        description: "Excel 파일의 시트 목록을 조회합니다.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            driveId: { type: "string" },
-            itemId: { type: "string" }
-          },
-          required: ["driveId", "itemId"]
-        }
+        description: "Excel 시트 목록 조회",
+        input_schema: { type: "object", properties: { driveId: { type: "string" }, itemId: { type: "string" } }, required: ["driveId", "itemId"] }
       },
       {
         name: "read_excel_sheet",
-        description: "Excel 파일의 특정 시트 내용을 읽습니다.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            driveId: { type: "string" },
-            itemId: { type: "string" },
-            sheetName: { type: "string" }
-          },
-          required: ["driveId", "itemId", "sheetName"]
-        }
+        description: "Excel 시트 내용 읽기",
+        input_schema: { type: "object", properties: { driveId: { type: "string" }, itemId: { type: "string" }, sheetName: { type: "string" } }, required: ["driveId", "itemId", "sheetName"] }
       },
       {
         name: "read_pdf_file",
-        description: "PDF 파일의 텍스트 내용을 읽습니다.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            driveId: { type: "string" },
-            itemId: { type: "string" }
-          },
-          required: ["driveId", "itemId"]
-        }
+        description: "PDF 파일 내용 읽기",
+        input_schema: { type: "object", properties: { driveId: { type: "string" }, itemId: { type: "string" } }, required: ["driveId", "itemId"] }
       }
     ];
+
+    // Confluence 도구 추가 (연결된 경우에만)
+    if (hasConfluence) {
+      tools.push({
+        name: "search_confluence",
+        description: "Confluence 위키에서 문서 검색",
+        input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+      });
+      tools.push({
+        name: "read_confluence_page",
+        description: "Confluence 페이지 내용 읽기",
+        input_schema: { type: "object", properties: { pageId: { type: "string" } }, required: ["pageId"] }
+      });
+    }
 
     const encoder = new TextEncoder();
     const stream = new TransformStream();
@@ -421,9 +392,8 @@ SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색�
     const sendStatus = async (status: string) => {
       await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'status', message: status })}\n\n`));
     };
-
     const sendFinal = async (content: any) => {
-      await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'final', content: content })}\n\n`));
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'final', content })}\n\n`));
       await writer.close();
     };
 
@@ -433,29 +403,29 @@ SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색�
 
         let currentMessages = [...cleanedMessages];
         let response = await anthropic.messages.create({
-          model: modelId,
-          max_tokens: 8192,
-          system: systemPrompt,
-          messages: currentMessages,
-          tools: tools
+          model: modelId, max_tokens: 8192, system: systemPrompt, messages: currentMessages, tools
         });
 
         let loopCount = 0;
         while (response.stop_reason === 'tool_use' && loopCount < 10) {
           loopCount++;
-
           const toolCalls = response.content.filter((c: any) => c.type === 'tool_use');
           const toolResults: any[] = [];
 
           for (const toolCall of toolCalls) {
             const tc = toolCall as any;
-            
             await sendStatus(getToolStatusMessage(tc.name, tc.input));
 
             let result = '';
             switch (tc.name) {
               case 'search_sharepoint':
                 result = await searchSharePoint(tc.input.query, session.accessToken);
+                break;
+              case 'search_confluence':
+                result = await searchConfluence(tc.input.query, session.atlassianAccessToken);
+                break;
+              case 'read_confluence_page':
+                result = await readConfluencePage(tc.input.pageId, session.atlassianAccessToken);
                 break;
               case 'get_excel_sheets':
                 result = await getExcelSheets(tc.input.driveId, tc.input.itemId, session.accessToken);
@@ -470,11 +440,7 @@ SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색�
                 result = JSON.stringify({ error: "알 수 없는 도구" });
             }
 
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tc.id,
-              content: result
-            });
+            toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
           }
 
           currentMessages = [
@@ -484,18 +450,12 @@ SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색�
           ];
 
           await sendStatus('✨ 답변 생성 중...');
-
           response = await anthropic.messages.create({
-            model: modelId,
-            max_tokens: 8192,
-            system: systemPrompt,
-            messages: currentMessages,
-            tools: tools
+            model: modelId, max_tokens: 8192, system: systemPrompt, messages: currentMessages, tools
           });
         }
 
         await sendFinal(response.content);
-
       } catch (error: any) {
         console.error("에러:", error.message);
         await sendFinal([{ type: 'text', text: '⚠️ 오류가 발생했습니다. 다시 시도해주세요.' }]);
@@ -503,17 +463,11 @@ SharePoint의 **지정된 폴더**에서만 포트폴리오사 문서를 검색�
     })();
 
     return new Response(stream.readable, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
     });
 
   } catch (error: any) {
     console.error("에러:", error.message);
-    return new Response(JSON.stringify({ 
-      error: "오류가 발생했습니다." 
-    }), { status: 500 });
+    return new Response(JSON.stringify({ error: "오류가 발생했습니다." }), { status: 500 });
   }
 }
