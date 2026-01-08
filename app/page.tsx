@@ -2,107 +2,191 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useSession, signIn, signOut } from "next-auth/react";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
-  Send, Bot, User, AlertCircle, Info, ExternalLink, 
-  MessageSquare, FileText, PieChart, ShieldCheck, 
-  Bell, Bug, X, ChevronRight 
+  Send, Bot, User, Plus, MessageSquare, 
+  Trash2, Menu, X, LogOut
 } from 'lucide-react';
 
-// 공지사항 데이터
-const ANNOUNCEMENTS = [
-  { id: 1, date: '2026-01-08', title: '2025 Q4 재무제표 업데이트 완료', tag: '신규' },
-  { id: 2, date: '2025-12-24', title: 'Jingpt v2.0 릴리즈 알림 (UI 개편)', tag: '안내' },
-];
+// 대화 타입 정의
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+}
 
-export default function JingptPortal() {
+interface Chat {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: number;
+}
+
+export default function JinGPT() {
   const { data: session, status } = useSession();
-  const [isChatOpen, setIsChatOpen] = useState(false);
-  const [isBugModalOpen, setIsBugModalOpen] = useState(false);
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: '안녕하세요! 크래프톤 포트폴리오사 지식베이스 진피티입니다. 무엇을 도와드릴까요?' }
-  ]);
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // localStorage에서 대화 기록 로드
+  useEffect(() => {
+    const saved = localStorage.getItem('jingpt-chats');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      setChats(parsed);
+      // 가장 최근 대화 열기
+      if (parsed.length > 0) {
+        setCurrentChatId(parsed[0].id);
+        setMessages(parsed[0].messages);
+      }
+    }
+  }, []);
+
+  // 대화 기록 저장
+  useEffect(() => {
+    if (chats.length > 0) {
+      localStorage.setItem('jingpt-chats', JSON.stringify(chats));
+    }
+  }, [chats]);
+
+  // 스크롤 자동 이동
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
 
-  const handleSendMessage = async (e?: React.FormEvent) => {
+  // 새 대화 시작
+  const startNewChat = () => {
+    const newChat: Chat = {
+      id: Date.now().toString(),
+      title: '새 대화',
+      messages: [],
+      createdAt: Date.now()
+    };
+    setChats(prev => [newChat, ...prev]);
+    setCurrentChatId(newChat.id);
+    setMessages([]);
+  };
+
+  // 대화 선택
+  const selectChat = (chatId: string) => {
+    const chat = chats.find(c => c.id === chatId);
+    if (chat) {
+      setCurrentChatId(chatId);
+      setMessages(chat.messages);
+    }
+  };
+
+  // 대화 삭제
+  const deleteChat = (chatId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setChats(prev => prev.filter(c => c.id !== chatId));
+    if (currentChatId === chatId) {
+      setCurrentChatId(null);
+      setMessages([]);
+    }
+  };
+
+  // 메시지 전송
+  const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!input.trim() || isLoading) return;
 
-    const userMessage = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMessage]);
+    // 새 대화면 생성
+    let chatId = currentChatId;
+    if (!chatId) {
+      const newChat: Chat = {
+        id: Date.now().toString(),
+        title: input.slice(0, 30) + (input.length > 30 ? '...' : ''),
+        messages: [],
+        createdAt: Date.now()
+      };
+      setChats(prev => [newChat, ...prev]);
+      chatId = newChat.id;
+      setCurrentChatId(chatId);
+    }
+
+    const userMessage: Message = { role: 'user', content: input };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInput('');
     setIsLoading(true);
+
+    // 대화 제목 업데이트 (첫 메시지일 때)
+    if (messages.length === 0) {
+      setChats(prev => prev.map(c => 
+        c.id === chatId ? { ...c, title: input.slice(0, 30) + (input.length > 30 ? '...' : '') } : c
+      ));
+    }
 
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMessage] }),
+        body: JSON.stringify({ messages: newMessages }),
       });
 
       const data = await response.json();
-      console.log("API 응답 데이터:", data); // 디버깅용
 
-      // 에러 체크
+      let assistantContent = '';
       if (data.error) {
-        setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ ${data.error}` }]);
-        return;
-      }
-
-      // content 배열에서 텍스트 추출
-      let assistantMessage = '';
-      
-      if (data.content && Array.isArray(data.content)) {
-        // content 배열을 순회하면서 text 타입인 것들만 추출
+        assistantContent = `⚠️ ${data.error}`;
+      } else if (data.content && Array.isArray(data.content)) {
         for (const block of data.content) {
           if (block.type === 'text' && block.text) {
-            assistantMessage += block.text;
+            assistantContent += block.text;
           }
         }
       }
 
-      if (assistantMessage) {
-        setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
-      } else {
-        console.log("텍스트를 찾을 수 없음. 전체 응답:", JSON.stringify(data));
-        setMessages(prev => [...prev, { role: 'assistant', content: '응답을 처리하는 중 문제가 발생했습니다. 다시 시도해주세요.' }]);
+      if (!assistantContent) {
+        assistantContent = '응답을 처리하는 중 문제가 발생했습니다.';
       }
 
+      const assistantMessage: Message = { role: 'assistant', content: assistantContent };
+      const updatedMessages = [...newMessages, assistantMessage];
+      setMessages(updatedMessages);
+
+      // 대화 기록 업데이트
+      setChats(prev => prev.map(c => 
+        c.id === chatId ? { ...c, messages: updatedMessages } : c
+      ));
+
     } catch (error) {
-      console.error("API 호출 에러:", error);
-      setMessages(prev => [...prev, { role: 'assistant', content: '서버와 연결할 수 없습니다. 다시 시도해주세요.' }]);
+      const errorMessage: Message = { role: 'assistant', content: '서버와 연결할 수 없습니다.' };
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 1. 로딩 중 화면
+  // 로딩 중
   if (status === "loading") {
-    return <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center text-gray-400">인증 상태 확인 중...</div>;
+    return (
+      <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center text-gray-400">
+        로딩 중...
+      </div>
+    );
   }
 
-  // 2. 로그인 안 되어 있을 때 화면
+  // 로그인 필요
   if (!session) {
     return (
       <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center p-6">
-        <div className="text-center max-w-sm w-full">
-          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-xl shadow-purple-500/20">
+        <div className="text-center max-w-sm">
+          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-8">
             <Bot size={48} className="text-white" />
           </div>
-          <h1 className="text-3xl font-extrabold mb-3">JinGPT Portal</h1>
-          <p className="text-gray-400 mb-10 text-sm leading-relaxed">
-            크래프톤 포트폴리오사 지식베이스 접속을 위해 <br />사내 계정으로 로그인이 필요합니다.
-          </p>
+          <h1 className="text-3xl font-bold text-white mb-3">JinGPT</h1>
+          <p className="text-gray-400 mb-8">크래프톤 포트폴리오사 지식베이스</p>
           <button 
             onClick={() => signIn("azure-ad")}
-            className="w-full py-4 bg-white text-black rounded-xl font-bold text-lg hover:bg-gray-200 transition-all flex items-center justify-center gap-2 shadow-lg"
+            className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all"
           >
             크래프톤 계정으로 로그인
           </button>
@@ -111,152 +195,216 @@ export default function JingptPortal() {
     );
   }
 
-  // 3. 로그인 성공 시 메인 화면
+  // 메인 UI
   return (
-    <div className="min-h-screen bg-[#0b0e14] text-gray-100 font-sans">
-      <nav className="border-b border-gray-800 bg-[#0b0e14]/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
-              <Bot size={20} className="text-white" />
-            </div>
-            <span className="text-xl font-bold tracking-tight">JinGPT <span className="text-purple-500 text-sm font-normal">v2.0</span></span>
-          </div>
-          <div className="flex items-center gap-6 text-sm font-medium text-gray-400">
-            <button onClick={() => setIsBugModalOpen(true)} className="hover:text-white flex items-center gap-1 transition-colors">
-              <Bug size={16} /> 버그 신고
-            </button>
-            <div className="w-px h-4 bg-gray-700"></div>
-            <div className="flex items-center gap-3">
-              <span className="text-gray-300">{session.user?.name} 님</span>
-              <button onClick={() => signOut()} className="text-[10px] bg-gray-800 px-2 py-1 rounded hover:bg-gray-700 transition-colors">로그아웃</button>
-            </div>
-          </div>
+    <div className="min-h-screen bg-[#0b0e14] flex">
+      {/* 사이드바 */}
+      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-[#0d1117] border-r border-gray-800 flex flex-col transition-all duration-300 overflow-hidden`}>
+        {/* 새 대화 버튼 */}
+        <div className="p-3">
+          <button 
+            onClick={startNewChat}
+            className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 rounded-lg flex items-center gap-2 text-white font-medium transition-colors"
+          >
+            <Plus size={18} /> 새 대화
+          </button>
         </div>
-      </nav>
 
-      <main className="max-w-7xl mx-auto px-6 py-12">
-        <section className="mb-16">
-          <div className="max-w-3xl">
-            <h1 className="text-5xl font-extrabold mb-6 leading-tight">
-              크래프톤 포트폴리오사 <br />
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-blue-500">지식베이스 인텔리전스</span>
-            </h1>
-            <p className="text-xl text-gray-400 mb-8 leading-relaxed">
-              진피티는 Confluence와 SharePoint에 흩어진 계약서, 재무제표, 지분율 데이터를 실시간으로 분석하여 가장 정확한 답변을 제공합니다.
-            </p>
-            <button 
-              onClick={() => setIsChatOpen(true)}
-              className="px-8 py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-lg transition-all flex items-center gap-2 shadow-lg shadow-purple-500/20 active:scale-95"
+        {/* 대화 목록 */}
+        <div className="flex-1 overflow-y-auto px-2">
+          {chats.map(chat => (
+            <div 
+              key={chat.id}
+              onClick={() => selectChat(chat.id)}
+              className={`group flex items-center gap-2 px-3 py-3 rounded-lg cursor-pointer mb-1 ${
+                currentChatId === chat.id ? 'bg-gray-800' : 'hover:bg-gray-800/50'
+              }`}
             >
-              대화 시작하기 <ChevronRight size={20} />
+              <MessageSquare size={16} className="text-gray-500 flex-shrink-0" />
+              <span className="text-sm text-gray-300 truncate flex-1">{chat.title}</span>
+              <button 
+                onClick={(e) => deleteChat(chat.id, e)}
+                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* 사용자 정보 */}
+        <div className="p-3 border-t border-gray-800">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-400 truncate">{session.user?.name}</span>
+            <button onClick={() => signOut()} className="text-gray-500 hover:text-white">
+              <LogOut size={16} />
             </button>
           </div>
-        </section>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FeatureCard icon={<PieChart className="text-blue-400" />} title="지분율 조회" desc="최신 분기 Cap Table 기반으로 실시간 지분율 정보를 제공합니다." />
-            <FeatureCard icon={<FileText className="text-purple-400" />} title="계약서 검색" desc="Contracts Package 내 BCA 등 주요 계약 조건을 찾아드립니다." />
-            <FeatureCard icon={<ShieldCheck className="text-green-400" />} title="ROFN / 2PP" desc="우선협상권 및 퍼블리싱 권한 보유 현황을 즉시 확인하세요." />
-            <FeatureCard icon={<Info className="text-amber-400" />} title="재무제표 확인" desc="각 포트폴리오사의 분기별 재무 지표를 요약해드립니다." />
-          </div>
-
-          <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-6">
-            <h3 className="text-lg font-bold flex items-center gap-2 mb-6"><Bell size={18} className="text-purple-400" /> 공지사항</h3>
-            <div className="space-y-4">
-              {ANNOUNCEMENTS.map(item => (
-                <div key={item.id} className="group cursor-pointer border-b border-gray-800 pb-3 last:border-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded-full font-bold">{item.tag}</span>
-                    <span className="text-xs text-gray-500">{item.date}</span>
-                  </div>
-                  <p className="text-sm text-gray-300 group-hover:text-white transition-colors">{item.title}</p>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
-      </main>
-
-      {/* 채팅 모달 */}
-      {isChatOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#0d1117] w-full max-w-4xl h-[80vh] rounded-2xl border border-gray-700 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between bg-[#161b22]">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-purple-600 rounded-full flex items-center justify-center"><Bot size={18} /></div>
-                <div>
-                  <h3 className="font-bold">JinGPT AI Assistant</h3>
-                  <p className="text-[10px] text-green-500 flex items-center gap-1">● 실시간 지식베이스 연결됨</p>
-                </div>
-              </div>
-              <button onClick={() => setIsChatOpen(false)} className="text-gray-400 hover:text-white transition-colors"><X /></button>
-            </div>
-
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#0b0e14]">
-              {messages.map((m, i) => (
-                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] flex gap-3 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                    <div className={`w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center ${m.role === 'user' ? 'bg-blue-600' : 'bg-gray-700'}`}>
-                      {m.role === 'user' ? <User size={16} /> : <Bot size={16} />}
-                    </div>
-                    <div className={`p-4 rounded-2xl text-sm leading-relaxed ${m.role === 'user' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-[#1c2128] text-gray-200 border border-gray-800'}`}>
-                      {m.content.split('\n').map((line, idx) => <p key={idx} className={idx > 0 ? "mt-2" : ""}>{line}</p>)}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {isLoading && <div className="text-xs text-gray-500 animate-pulse">지식베이스를 검색 중입니다...</div>}
-            </div>
-
-            <form onSubmit={handleSendMessage} className="p-4 bg-[#161b22] border-t border-gray-800">
-              <div className="relative group">
-                <input 
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="질문을 입력하세요..."
-                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl px-4 py-4 pr-12 focus:outline-none focus:border-purple-500 transition-all"
-                />
-                <button 
-                  type="submit" 
-                  disabled={isLoading || !input.trim()}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors disabled:bg-gray-700"
-                >
-                  <Send size={18} />
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-      
-      {/* 버그 신고 모달 */}
-      {isBugModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-8 max-w-md w-full text-center">
-            <h3 className="text-xl font-bold mb-4 flex items-center justify-center gap-2 text-red-400"><Bug size={24} /> 버그 및 개선 요청</h3>
-            <p className="text-gray-400 text-sm mb-6 leading-relaxed">Andrew님(U02SC6JVBAR)에게 Slack DM으로 전달됩니다.</p>
-            <textarea className="w-full h-32 bg-[#0d1117] border border-gray-700 rounded-lg p-3 text-sm focus:outline-none focus:border-red-500 mb-4" placeholder="내용을 적어주세요." />
-            <div className="flex gap-3">
-              <button onClick={() => setIsBugModalOpen(false)} className="flex-1 py-3 rounded-lg bg-gray-800 font-medium transition-colors">취소</button>
-              <button onClick={() => { alert('제출되었습니다!'); setIsBugModalOpen(false); }} className="flex-1 py-3 rounded-lg bg-red-600 font-medium transition-colors">신고하기</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FeatureCard({ icon, title, desc }: { icon: React.ReactNode, title: string, desc: string }) {
-  return (
-    <div className="bg-[#161b22] border border-gray-800 p-6 rounded-2xl hover:border-purple-500/50 transition-all group hover:bg-[#1c2128]">
-      <div className="w-12 h-12 bg-[#0d1117] rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-        {icon}
       </div>
-      <h3 className="text-lg font-bold mb-2 group-hover:text-purple-400 transition-colors">{title}</h3>
-      <p className="text-sm text-gray-400 leading-relaxed">{desc}</p>
+
+      {/* 메인 채팅 영역 */}
+      <div className="flex-1 flex flex-col">
+        {/* 헤더 */}
+        <div className="h-14 border-b border-gray-800 flex items-center px-4 gap-3">
+          <button 
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="text-gray-400 hover:text-white"
+          >
+            {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
+              <Bot size={18} className="text-white" />
+            </div>
+            <span className="font-semibold text-white">JinGPT</span>
+            <span className="text-xs text-purple-400">v2.0</span>
+          </div>
+        </div>
+
+        {/* 메시지 영역 */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+          {messages.length === 0 ? (
+            // 빈 상태
+            <div className="h-full flex flex-col items-center justify-center text-center px-4">
+              <div className="w-16 h-16 bg-purple-600/20 rounded-2xl flex items-center justify-center mb-6">
+                <Bot size={32} className="text-purple-400" />
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-2">무엇을 도와드릴까요?</h2>
+              <p className="text-gray-400 max-w-md">
+                포트폴리오사의 지분율, 계약서, 재무제표 등을 검색하고 분석해드립니다.
+              </p>
+              <div className="flex flex-wrap gap-2 mt-6 justify-center">
+                {['Ruckus 지분율', 'Antistatic 계약서', 'D4N ROFN'].map(q => (
+                  <button 
+                    key={q}
+                    onClick={() => setInput(q)}
+                    className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-300 transition-colors"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            // 메시지 목록
+            <div className="max-w-4xl mx-auto py-6 px-4">
+              {messages.map((m, i) => (
+                <div key={i} className={`flex gap-4 mb-6 ${m.role === 'user' ? 'justify-end' : ''}`}>
+                  {m.role === 'assistant' && (
+                    <div className="w-8 h-8 bg-purple-600 rounded-lg flex-shrink-0 flex items-center justify-center">
+                      <Bot size={18} className="text-white" />
+                    </div>
+                  )}
+                  <div className={`max-w-[80%] ${m.role === 'user' ? 'bg-blue-600 rounded-2xl px-4 py-3' : ''}`}>
+                    {m.role === 'user' ? (
+                      <p className="text-white">{m.content}</p>
+                    ) : (
+                      <div className="prose prose-invert prose-sm max-w-none">
+                        <ReactMarkdown 
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            a: ({ href, children }) => (
+                              <a href={href} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 underline">
+                                {children}
+                              </a>
+                            ),
+                            table: ({ children }) => (
+                              <div className="overflow-x-auto my-4">
+                                <table className="min-w-full border border-gray-700 rounded-lg overflow-hidden">
+                                  {children}
+                                </table>
+                              </div>
+                            ),
+                            thead: ({ children }) => (
+                              <thead className="bg-gray-800">{children}</thead>
+                            ),
+                            th: ({ children }) => (
+                              <th className="px-4 py-2 text-left text-sm font-semibold text-gray-200 border-b border-gray-700">
+                                {children}
+                              </th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="px-4 py-2 text-sm text-gray-300 border-b border-gray-800">
+                                {children}
+                              </td>
+                            ),
+                            p: ({ children }) => (
+                              <p className="mb-3 text-gray-200 leading-relaxed">{children}</p>
+                            ),
+                            h2: ({ children }) => (
+                              <h2 className="text-lg font-bold text-white mt-6 mb-3">{children}</h2>
+                            ),
+                            h3: ({ children }) => (
+                              <h3 className="text-base font-semibold text-white mt-4 mb-2">{children}</h3>
+                            ),
+                            ul: ({ children }) => (
+                              <ul className="list-disc list-inside mb-3 text-gray-300">{children}</ul>
+                            ),
+                            li: ({ children }) => (
+                              <li className="mb-1">{children}</li>
+                            ),
+                            strong: ({ children }) => (
+                              <strong className="font-semibold text-white">{children}</strong>
+                            ),
+                            hr: () => (
+                              <hr className="my-4 border-gray-700" />
+                            ),
+                          }}
+                        >
+                          {m.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+                  {m.role === 'user' && (
+                    <div className="w-8 h-8 bg-blue-600 rounded-lg flex-shrink-0 flex items-center justify-center">
+                      <User size={18} className="text-white" />
+                    </div>
+                  )}
+                </div>
+              ))}
+              {isLoading && (
+                <div className="flex gap-4 mb-6">
+                  <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
+                    <Bot size={18} className="text-white" />
+                  </div>
+                  <div className="flex items-center gap-2 text-gray-400">
+                    <div className="flex gap-1">
+                      <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                    </div>
+                    <span className="text-sm">검색 중...</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 입력 영역 */}
+        <div className="border-t border-gray-800 p-4">
+          <form onSubmit={handleSend} className="max-w-4xl mx-auto">
+            <div className="relative">
+              <input 
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="메시지를 입력하세요..."
+                disabled={isLoading}
+                className="w-full bg-[#1c2128] border border-gray-700 rounded-xl px-4 py-4 pr-12 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
+              />
+              <button 
+                type="submit" 
+                disabled={isLoading || !input.trim()}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors disabled:bg-gray-700 disabled:cursor-not-allowed"
+              >
+                <Send size={18} className="text-white" />
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
