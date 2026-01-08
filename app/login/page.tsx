@@ -1,22 +1,40 @@
 "use client";
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { signIn, useSession } from "next-auth/react";
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Bot, Building2, FileText } from 'lucide-react';
 
 export default function LoginPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [hasAtlassian, setHasAtlassian] = useState(false);
+  const [checking, setChecking] = useState(true);
 
-  // 이미 둘 다 로그인했으면 채팅으로
-  React.useEffect(() => {
-    if (session?.accessToken && session?.atlassianAccessToken) {
+  // Atlassian 연결 상태 확인
+  useEffect(() => {
+    const checkAtlassian = async () => {
+      try {
+        const res = await fetch('/api/auth/atlassian/status');
+        const data = await res.json();
+        setHasAtlassian(data.connected);
+      } catch (e) {
+        setHasAtlassian(false);
+      }
+      setChecking(false);
+    };
+    checkAtlassian();
+  }, [searchParams]);
+
+  // 둘 다 연결되면 채팅으로
+  useEffect(() => {
+    if (session?.accessToken && hasAtlassian && !checking) {
       router.push('/chat');
     }
-  }, [session, router]);
+  }, [session, hasAtlassian, checking, router]);
 
-  if (status === "loading") {
+  if (status === "loading" || checking) {
     return (
       <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center text-gray-400">
         로딩 중...
@@ -25,7 +43,10 @@ export default function LoginPage() {
   }
 
   const hasAzure = !!session?.accessToken;
-  const hasAtlassian = !!session?.atlassianAccessToken;
+
+  const handleAtlassianLogin = () => {
+    window.location.href = '/api/auth/atlassian';
+  };
 
   return (
     <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center p-6">
@@ -76,7 +97,7 @@ export default function LoginPage() {
                 <span className="text-green-400 text-sm font-medium">✓ 연결됨</span>
               ) : (
                 <button 
-                  onClick={() => signIn("atlassian")}
+                  onClick={handleAtlassianLogin}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
                 >
                   연결하기
