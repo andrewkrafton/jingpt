@@ -8,6 +8,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
 });
 
+// SharePoint 검색 함수
 async function searchSharePoint(query: string, accessToken: string) {
   try {
     const res = await fetch('https://graph.microsoft.com/v1.0/search/query', {
@@ -36,6 +37,7 @@ async function searchSharePoint(query: string, accessToken: string) {
   }
 }
 
+// 파일 상세 읽기 함수
 async function readSharePointFile(fileId: string, accessToken: string) {
   try {
     const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${fileId}`, {
@@ -65,11 +67,12 @@ export async function POST(req: Request) {
     const { messages } = await req.json();
 
     const response = await anthropic.messages.create({
-      model: "claude-4-5-sonnet-latest", // 🌟 최신 Claude 4.5 Sonnet 모델 적용
+      // 🌟 지인이 추천한 모델명으로 수정
+      model: "claude-sonnet-4-5", 
       max_tokens: 4096,
       system: `당신은 크래프톤 전용 지식 서비스 'Chat진피티'입니다. 
       사용자의 질문에 대해 반드시 'search_sharepoint' 도구를 사용하여 실제 파일을 확인하십시오. 
-      절대 수치를 지어내지 마십시오.`,
+      추측으로 답변하지 마십시오.`,
       messages: messages,
       tools: [
         { 
@@ -96,7 +99,8 @@ export async function POST(req: Request) {
       }
 
       const finalResponse = await anthropic.messages.create({
-        model: "claude-4-5-sonnet-latest", // 🌟 최신 모델 적용
+        // 🌟 지인이 추천한 모델명으로 수정
+        model: "claude-sonnet-4-5", 
         max_tokens: 4096,
         messages: [
           ...messages,
