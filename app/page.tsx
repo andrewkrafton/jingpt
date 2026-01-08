@@ -1,7 +1,7 @@
 "use client";
 
 import React from 'react';
-import { useSession, signIn, signOut } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import { useRouter } from 'next/navigation';
 import { 
   Bot, FileText, PieChart, ShieldCheck, 
@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 
 const ANNOUNCEMENTS = [
-  { id: 1, date: '2026-01-09', title: 'JinGPT v2.0 정식 출시! (PDF 읽기, 실시간 상태 표시)', tag: '신규' },
+  { id: 1, date: '2026-01-09', title: 'JinGPT v2.0 정식 출시! (Confluence 연동 추가)', tag: '신규' },
   { id: 2, date: '2026-01-08', title: '2025 Q4 재무제표 업데이트 완료', tag: '안내' },
 ];
 
@@ -25,26 +25,10 @@ export default function Home() {
     );
   }
 
-  if (!session) {
-    return (
-      <div className="min-h-screen bg-[#0b0e14] flex items-center justify-center p-6">
-        <div className="text-center max-w-sm w-full">
-          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-xl shadow-purple-500/20">
-            <Bot size={48} className="text-white" />
-          </div>
-          <h1 className="text-3xl font-extrabold text-white mb-3">JinGPT Portal</h1>
-          <p className="text-gray-400 mb-10 text-sm leading-relaxed">
-            크래프톤 포트폴리오사 지식베이스 접속을 위해 <br />사내 계정으로 로그인이 필요합니다.
-          </p>
-          <button 
-            onClick={() => signIn("azure-ad")}
-            className="w-full py-4 bg-white text-black rounded-xl font-bold text-lg hover:bg-gray-200 transition-all flex items-center justify-center gap-2 shadow-lg"
-          >
-            크래프톤 계정으로 로그인
-          </button>
-        </div>
-      </div>
-    );
+  // 로그인 안 됐으면 로그인 페이지로
+  if (!session?.accessToken) {
+    router.push('/login');
+    return null;
   }
 
   return (
@@ -58,9 +42,14 @@ export default function Home() {
             <span className="text-xl font-bold tracking-tight">JinGPT <span className="text-purple-500 text-sm font-normal">v2.0</span></span>
           </div>
           <div className="flex items-center gap-6 text-sm font-medium text-gray-400">
+            <div className="flex items-center gap-2">
+              {session.accessToken && <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">SharePoint ✓</span>}
+              {session.atlassianAccessToken && <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">Confluence ✓</span>}
+              {!session.atlassianAccessToken && <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-1 rounded">Confluence ✗</span>}
+            </div>
             <div className="flex items-center gap-3">
               <span className="text-gray-300">{session.user?.name} 님</span>
-              <button onClick={() => signOut()} className="text-[10px] bg-gray-800 px-2 py-1 rounded hover:bg-gray-700 transition-colors">로그아웃</button>
+              <button onClick={() => signOut({ callbackUrl: '/login' })} className="text-[10px] bg-gray-800 px-2 py-1 rounded hover:bg-gray-700 transition-colors">로그아웃</button>
             </div>
           </div>
         </div>
@@ -74,7 +63,7 @@ export default function Home() {
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-blue-500">지식베이스 인텔리전스</span>
             </h1>
             <p className="text-xl text-gray-400 mb-8 leading-relaxed">
-              진피티는 SharePoint에 있는 계약서, 재무제표, 지분율 데이터를 실시간으로 분석하여 가장 정확한 답변을 제공합니다.
+              진피티는 SharePoint와 Confluence에 있는 계약서, 재무제표, 위키 문서를 실시간으로 분석하여 가장 정확한 답변을 제공합니다.
             </p>
             <button 
               onClick={() => router.push('/chat')}
@@ -89,7 +78,7 @@ export default function Home() {
           <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
             <FeatureCard icon={<PieChart className="text-blue-400" />} title="지분율 조회" desc="최신 분기 Cap Table 기반으로 실시간 지분율 정보를 제공합니다." />
             <FeatureCard icon={<FileText className="text-purple-400" />} title="계약서 검색" desc="Contracts Package 내 BCA, ROFN 등 주요 계약 조건을 찾아드립니다." />
-            <FeatureCard icon={<ShieldCheck className="text-green-400" />} title="ROFN / 2PP" desc="우선협상권 및 퍼블리싱 권한 보유 현황을 즉시 확인하세요." />
+            <FeatureCard icon={<ShieldCheck className="text-green-400" />} title="위키 문서" desc="Confluence에 정리된 포트폴리오사 정보를 검색합니다." />
             <FeatureCard icon={<Info className="text-amber-400" />} title="재무제표 확인" desc="각 포트폴리오사의 분기별 재무 지표를 요약해드립니다." />
           </div>
 
