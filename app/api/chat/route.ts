@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../../lib/auth"; 
+import { cookies } from 'next/headers';
 // @ts-ignore
 import pdf from 'pdf-parse/lib/pdf-parse.js';
 
@@ -89,7 +90,6 @@ async function getConfluenceCloudId(accessToken: string): Promise<string | null>
     });
     if (!res.ok) return null;
     const sites = await res.json();
-    // krafton 사이트 찾기
     const kraftonSite = sites.find((s: any) => s.url.includes('krafton')) || sites[0];
     return kraftonSite?.id || null;
   } catch (error) {
@@ -157,7 +157,6 @@ async function readConfluencePage(pageId: string, accessToken: string) {
 
     const page = await res.json();
     
-    // HTML 태그 제거하고 텍스트만 추출
     let content = page.body?.storage?.value || '';
     content = content
       .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, '[매크로]')
@@ -169,7 +168,6 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       .replace(/\s+/g, ' ')
       .trim();
 
-    // 너무 길면 자르기
     if (content.length > 10000) {
       content = content.slice(0, 10000) + '\n\n... (문서가 길어 일부만 표시됨)';
     }
@@ -303,7 +301,10 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ error: "SharePoint 인증이 필요합니다." }), { status: 401 });
     }
 
-    const hasConfluence = !!session.atlassianAccessToken;
+    // Atlassian 토큰은 쿠키에서 가져오기
+    const cookieStore = await cookies();
+    const atlassianToken = cookieStore.get('atlassian_access_token')?.value;
+    const hasConfluence = !!atlassianToken;
 
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
@@ -422,10 +423,10 @@ ${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
                 result = await searchSharePoint(tc.input.query, session.accessToken);
                 break;
               case 'search_confluence':
-                result = await searchConfluence(tc.input.query, session.atlassianAccessToken);
+                result = await searchConfluence(tc.input.query, atlassianToken!);
                 break;
               case 'read_confluence_page':
-                result = await readConfluencePage(tc.input.pageId, session.atlassianAccessToken);
+                result = await readConfluencePage(tc.input.pageId, atlassianToken!);
                 break;
               case 'get_excel_sheets':
                 result = await getExcelSheets(tc.input.driveId, tc.input.itemId, session.accessToken);
@@ -471,3 +472,17 @@ ${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
     return new Response(JSON.stringify({ error: "오류가 발생했습니다." }), { status: 500 });
   }
 }
+```
+
+---
+
+**Step 7: Vercel 환경변수 추가**
+
+`NEXTAUTH_URL` 환경변수가 있는지 확인하고 없으면 추가:
+
+| Name | Value |
+|------|-------|
+| `NEXTAUTH_URL` | `https://jingpt-two.vercel.app` |
+
+---
+
