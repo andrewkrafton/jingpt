@@ -55,6 +55,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [progressMessages, setProgressMessages] = useState<string[]>([]); // 새로 추가!
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [hoveredMessageIndex, setHoveredMessageIndex] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -81,7 +82,7 @@ export default function ChatPage() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, statusMessage]);
+  }, [messages, statusMessage, progressMessages]); // progressMessages 추가
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -89,7 +90,7 @@ export default function ChatPage() {
     }
   }, [status, router]);
 
-  // 커스텀 로그아웃 (Atlassian 쿠키도 삭제)
+  // 커스텀 로그아웃
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
@@ -155,6 +156,7 @@ export default function ChatPage() {
     setInput('');
     setIsLoading(true);
     setStatusMessage('🤔 질문 분석 중...');
+    setProgressMessages([]); // progress 초기화
 
     if (messages.length === 0) {
       setChats(prev => prev.map(c => 
@@ -183,6 +185,7 @@ export default function ChatPage() {
         ));
         setIsLoading(false);
         setStatusMessage('');
+        setProgressMessages([]);
         return;
       }
 
@@ -213,6 +216,9 @@ export default function ChatPage() {
               
               if (data.type === 'status') {
                 setStatusMessage(data.message);
+              } else if (data.type === 'progress') {
+                // 🆕 progress 메시지 추가!
+                setProgressMessages(prev => [...prev, data.message]);
               } else if (data.type === 'final') {
                 if (data.content && Array.isArray(data.content)) {
                   for (const block of data.content) {
@@ -259,6 +265,7 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
       setStatusMessage('');
+      setProgressMessages([]);
     }
   };
 
@@ -458,13 +465,15 @@ export default function ChatPage() {
                 </div>
               ))}
               
+              {/* 🆕 로딩 중 UI 개선 - progress 메시지 표시 */}
               {isLoading && (
                 <div className="flex gap-4 mb-6">
                   <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
                     <Bot size={18} className="text-white" />
                   </div>
-                  <div className="bg-[#1c2128] rounded-2xl px-4 py-3 border border-gray-700">
-                    <div className="flex items-center gap-3">
+                  <div className="bg-[#1c2128] rounded-2xl px-4 py-3 border border-gray-700 min-w-[200px]">
+                    {/* 현재 상태 */}
+                    <div className="flex items-center gap-3 mb-2">
                       <div className="flex gap-1">
                         <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
                         <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
@@ -472,6 +481,17 @@ export default function ChatPage() {
                       </div>
                       <span className="text-sm text-gray-300">{statusMessage}</span>
                     </div>
+                    
+                    {/* 🆕 Progress 메시지들 (검색 결과 요약) */}
+                    {progressMessages.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-gray-700 space-y-2">
+                        {progressMessages.map((msg, idx) => (
+                          <div key={idx} className="text-sm text-gray-400 whitespace-pre-line">
+                            {msg}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -504,3 +524,29 @@ export default function ChatPage() {
     </div>
   );
 }
+```
+
+---
+
+## 변경 사항 요약
+
+| 위치 | 변경 내용 |
+|------|----------|
+| **55줄** | `progressMessages` state 추가 |
+| **79줄** | `useEffect` 의존성에 `progressMessages` 추가 |
+| **146줄** | `setProgressMessages([])` 초기화 |
+| **198-200줄** | `progress` 타입 처리 추가 |
+| **336-346줄** | 로딩 UI에 progress 메시지 표시 영역 추가 |
+
+---
+
+## 결과 예시
+```
+🤔 질문 분석 중...
+📚 Confluence에서 "Torpor" 검색 중...
+─────────────────────────────
+✅ 5개 페이지를 찾았습니다!
+- 49. Torpor Games
+- Torpor Games Board Meeting
+- Torpor 2PP Details
+✨ 분석 중...
