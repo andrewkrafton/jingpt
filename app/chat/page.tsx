@@ -13,6 +13,7 @@ import {
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  timestamp?: number;
 }
 
 interface Chat {
@@ -20,6 +21,29 @@ interface Chat {
   title: string;
   messages: Message[];
   createdAt: number;
+}
+
+// 시간 포맷 함수
+function formatTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  
+  const timeStr = date.toLocaleTimeString('ko-KR', { 
+    hour: '2-digit', 
+    minute: '2-digit',
+    hour12: true 
+  });
+  
+  if (isToday) {
+    return timeStr;
+  } else {
+    const dateStr = date.toLocaleDateString('ko-KR', { 
+      month: 'short', 
+      day: 'numeric' 
+    });
+    return `${dateStr} ${timeStr}`;
+  }
 }
 
 export default function ChatPage() {
@@ -32,6 +56,7 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [hoveredMessageIndex, setHoveredMessageIndex] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -110,7 +135,11 @@ export default function ChatPage() {
       setCurrentChatId(chatId);
     }
 
-    const userMessage: Message = { role: 'user', content: input };
+    const userMessage: Message = { 
+      role: 'user', 
+      content: input,
+      timestamp: Date.now()
+    };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
@@ -129,6 +158,27 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: newMessages }),
       });
+
+      if (response.status === 401) {
+        const errorData = await response.json();
+        const errorMessage: Message = { 
+          role: 'assistant', 
+          content: `⚠️ ${errorData.error || '세션이 만료되었습니다.'}\n\n**해결 방법:** 왼쪽 하단의 로그아웃 버튼을 클릭하고 다시 로그인해주세요.`,
+          timestamp: Date.now()
+        };
+        const updatedMessages = [...newMessages, errorMessage];
+        setMessages(updatedMessages);
+        setChats(prev => prev.map(c => 
+          c.id === chatId ? { ...c, messages: updatedMessages } : c
+        ));
+        setIsLoading(false);
+        setStatusMessage('');
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -154,7 +204,6 @@ export default function ChatPage() {
               if (data.type === 'status') {
                 setStatusMessage(data.message);
               } else if (data.type === 'final') {
-                // 최종 응답 처리
                 if (data.content && Array.isArray(data.content)) {
                   for (const block of data.content) {
                     if (block.type === 'text' && block.text) {
@@ -174,7 +223,11 @@ export default function ChatPage() {
         assistantContent = '응답을 처리하는 중 문제가 발생했습니다.';
       }
 
-      const assistantMessage: Message = { role: 'assistant', content: assistantContent };
+      const assistantMessage: Message = { 
+        role: 'assistant', 
+        content: assistantContent,
+        timestamp: Date.now()
+      };
       const updatedMessages = [...newMessages, assistantMessage];
       setMessages(updatedMessages);
 
@@ -183,8 +236,16 @@ export default function ChatPage() {
       ));
 
     } catch (error) {
-      const errorMessage: Message = { role: 'assistant', content: '⚠️ 서버와 연결할 수 없습니다.' };
-      setMessages(prev => [...prev, errorMessage]);
+      const errorMessage: Message = { 
+        role: 'assistant', 
+        content: '⚠️ 서버와 연결할 수 없습니다. 잠시 후 다시 시도해주세요.',
+        timestamp: Date.now()
+      };
+      const updatedMessages = [...newMessages, errorMessage];
+      setMessages(updatedMessages);
+      setChats(prev => prev.map(c => 
+        c.id === chatId ? { ...c, messages: updatedMessages } : c
+      ));
     } finally {
       setIsLoading(false);
       setStatusMessage('');
@@ -204,9 +265,11 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0b0e14] flex">
-      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-[#0d1117] border-r border-gray-800 flex flex-col transition-all duration-300 overflow-hidden`}>
-        <div className="p-3 space-y-2">
+    <div className="h-screen bg-[#0b0e14] flex overflow-hidden">
+      {/* 사이드바 */}
+      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-[#0d1117] border-r border-gray-800 flex flex-col transition-all duration-300 overflow-hidden flex-shrink-0`}>
+        {/* 사이드바 상단 - 고정 */}
+        <div className="p-3 space-y-2 flex-shrink-0">
           <button 
             onClick={() => router.push('/')}
             className="w-full py-2 px-4 bg-gray-800 hover:bg-gray-700 rounded-lg flex items-center gap-2 text-gray-300 text-sm transition-colors"
@@ -221,6 +284,7 @@ export default function ChatPage() {
           </button>
         </div>
 
+        {/* 대화 목록 - 스크롤 가능 */}
         <div className="flex-1 overflow-y-auto px-2">
           {chats.map(chat => (
             <div 
@@ -242,7 +306,8 @@ export default function ChatPage() {
           ))}
         </div>
 
-        <div className="p-3 border-t border-gray-800">
+        {/* 사이드바 하단 - 고정 */}
+        <div className="p-3 border-t border-gray-800 flex-shrink-0">
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-400 truncate">{session.user?.name}</span>
             <button onClick={() => signOut()} className="text-gray-500 hover:text-white">
@@ -252,8 +317,10 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col">
-        <div className="h-14 border-b border-gray-800 flex items-center px-4 gap-3">
+      {/* 메인 영역 */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* 헤더 - 고정 */}
+        <div className="h-14 border-b border-gray-800 flex items-center px-4 gap-3 flex-shrink-0">
           <button 
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className="text-gray-400 hover:text-white"
@@ -269,6 +336,7 @@ export default function ChatPage() {
           </div>
         </div>
 
+        {/* 채팅 영역 - 스크롤 가능 */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center px-4">
@@ -277,10 +345,10 @@ export default function ChatPage() {
               </div>
               <h2 className="text-2xl font-bold text-white mb-2">무엇을 도와드릴까요?</h2>
               <p className="text-gray-400 max-w-md">
-                포트폴리오사의 지분율, 계약서, 재무제표 등을 검색하고 분석해드립니다.
+                포트폴리오사의 지분율, 계약서, 재무제표, 위키 문서 등을 검색하고 분석해드립니다.
               </p>
               <div className="flex flex-wrap gap-2 mt-6 justify-center">
-                {['Ruckus 지분율', 'Antistatic 계약서', 'D4N ROFN'].map(q => (
+                {['Ruckus 지분율', 'Antistatic 계약서', 'PCF 위키 문서'].map(q => (
                   <button 
                     key={q}
                     onClick={() => setInput(q)}
@@ -294,13 +362,18 @@ export default function ChatPage() {
           ) : (
             <div className="max-w-4xl mx-auto py-6 px-4">
               {messages.map((m, i) => (
-                <div key={i} className={`flex gap-4 mb-6 ${m.role === 'user' ? 'justify-end' : ''}`}>
+                <div 
+                  key={i} 
+                  className={`flex gap-4 mb-6 ${m.role === 'user' ? 'justify-end' : ''}`}
+                  onMouseEnter={() => setHoveredMessageIndex(i)}
+                  onMouseLeave={() => setHoveredMessageIndex(null)}
+                >
                   {m.role === 'assistant' && (
                     <div className="w-8 h-8 bg-purple-600 rounded-lg flex-shrink-0 flex items-center justify-center">
                       <Bot size={18} className="text-white" />
                     </div>
                   )}
-                  <div className={`max-w-[80%] ${m.role === 'user' ? 'bg-blue-600 rounded-2xl px-4 py-3' : ''}`}>
+                  <div className={`max-w-[80%] relative ${m.role === 'user' ? 'bg-blue-600 rounded-2xl px-4 py-3' : ''}`}>
                     {m.role === 'user' ? (
                       <p className="text-white">{m.content}</p>
                     ) : (
@@ -360,6 +433,12 @@ export default function ChatPage() {
                         </ReactMarkdown>
                       </div>
                     )}
+                    {/* 시간 표시 - 호버 시 */}
+                    {hoveredMessageIndex === i && m.timestamp && (
+                      <div className={`absolute ${m.role === 'user' ? 'right-0' : 'left-0'} -bottom-5 text-xs text-gray-500 whitespace-nowrap`}>
+                        {formatTime(m.timestamp)}
+                      </div>
+                    )}
                   </div>
                   {m.role === 'user' && (
                     <div className="w-8 h-8 bg-blue-600 rounded-lg flex-shrink-0 flex items-center justify-center">
@@ -369,7 +448,6 @@ export default function ChatPage() {
                 </div>
               ))}
               
-              {/* 로딩 상태 - 실시간 진행상황 표시 */}
               {isLoading && (
                 <div className="flex gap-4 mb-6">
                   <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
@@ -391,7 +469,8 @@ export default function ChatPage() {
           )}
         </div>
 
-        <div className="border-t border-gray-800 p-4">
+        {/* 입력창 - 하단 고정 */}
+        <div className="border-t border-gray-800 p-4 flex-shrink-0 bg-[#0b0e14]">
           <form onSubmit={handleSend} className="max-w-4xl mx-auto">
             <div className="relative">
               <input 
