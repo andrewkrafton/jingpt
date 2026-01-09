@@ -459,7 +459,7 @@ ${hasConfluence ? `4. **search_confluence**: 위키 검색
         });
 
         let loopCount = 0;
-        while (response.stop_reason === 'tool_use' && loopCount < 10) {
+        while (response.stop_reason === 'tool_use' && loopCount < 5) {
           loopCount++;
           const toolCalls = response.content.filter((c: any) => c.type === 'tool_use');
           const toolResults: any[] = [];
