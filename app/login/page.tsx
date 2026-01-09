@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useEffect, useState, Suspense } from 'react';
-import { signIn, useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import { useRouter } from 'next/navigation';
-import { Bot, Building2, FileText } from 'lucide-react';
+import { Bot, Building2, FileText, LogOut } from 'lucide-react';
 
 function LoginContent() {
   const { data: session, status } = useSession();
@@ -32,6 +32,16 @@ function LoginContent() {
       router.push('/chat');
     }
   }, [session, hasAtlassian, checking, router]);
+
+  // 커스텀 로그아웃 (Atlassian 쿠키도 삭제)
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      // 에러 무시
+    }
+    signOut({ callbackUrl: '/login' });
+  };
 
   if (status === "loading" || checking) {
     return (
@@ -130,6 +140,16 @@ function LoginContent() {
             className="w-full mt-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium text-sm transition-all"
           >
             SharePoint만 사용하기 (Confluence 제외)
+          </button>
+        )}
+
+        {/* 로그아웃 버튼 (이미 로그인된 경우) */}
+        {(hasAzure || hasAtlassian) && (
+          <button 
+            onClick={handleLogout}
+            className="w-full mt-4 py-2 text-gray-500 hover:text-gray-300 text-sm transition-colors flex items-center justify-center gap-2"
+          >
+            <LogOut size={14} /> 로그아웃
           </button>
         )}
       </div>
