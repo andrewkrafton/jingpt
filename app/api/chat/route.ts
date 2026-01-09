@@ -173,21 +173,37 @@ async function searchConfluence(query: string, accessToken: string) {
 // Confluence 페이지 내용 읽기
 async function readConfluencePage(pageId: string, accessToken: string) {
   try {
+    console.log('=== Reading Confluence Page ===');
+    console.log('Page ID:', pageId);
+    
     const cloudId = await getConfluenceCloudId(accessToken);
     if (!cloudId) {
+      console.error('Cloud ID not found for page read');
       return JSON.stringify({ error: "Confluence 연결 실패" });
     }
 
-    const res = await fetch(
-      `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/${pageId}?expand=body.storage,space,version`,
-      { headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } }
-    );
+    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/${pageId}?expand=body.storage,space,version`;
+    console.log('Page URL:', url);
+    
+    const res = await fetch(url, { 
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
+    });
+
+    console.log('Page read status:', res.status);
 
     if (!res.ok) {
-      return JSON.stringify({ error: "페이지 읽기 실패" });
+      const errorText = await res.text();
+      console.error('Page read error:', res.status, errorText);
+      return JSON.stringify({ 
+        error: "페이지 읽기 실패", 
+        status: res.status,
+        detail: errorText 
+      });
     }
 
     const page = await res.json();
+    console.log('Page title:', page.title);
+    console.log('Page space:', page.space?.name);
     
     let content = page.body?.storage?.value || '';
     content = content
@@ -199,6 +215,8 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       .replace(/&amp;/g, '&')
       .replace(/\s+/g, ' ')
       .trim();
+
+    console.log('Content length:', content.length);
 
     if (content.length > 10000) {
       content = content.slice(0, 10000) + '\n\n... (문서가 길어 일부만 표시됨)';
@@ -212,6 +230,7 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       content: content
     });
   } catch (error: any) {
+    console.error('Page read exception:', error);
     return JSON.stringify({ error: "페이지 읽기 실패", detail: error.message });
   }
 }
