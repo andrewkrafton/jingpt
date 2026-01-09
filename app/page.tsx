@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from 'next/navigation';
 import { 
@@ -16,6 +16,20 @@ const ANNOUNCEMENTS = [
 export default function Home() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const [hasAtlassian, setHasAtlassian] = useState(false);
+
+  useEffect(() => {
+    const checkAtlassian = async () => {
+      try {
+        const res = await fetch('/api/auth/atlassian/status');
+        const data = await res.json();
+        setHasAtlassian(data.connected);
+      } catch (e) {
+        setHasAtlassian(false);
+      }
+    };
+    checkAtlassian();
+  }, []);
 
   if (status === "loading") {
     return (
@@ -25,7 +39,6 @@ export default function Home() {
     );
   }
 
-  // 로그인 안 됐으면 로그인 페이지로
   if (!session?.accessToken) {
     router.push('/login');
     return null;
@@ -43,9 +56,12 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-6 text-sm font-medium text-gray-400">
             <div className="flex items-center gap-2">
-              {session.accessToken && <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">SharePoint ✓</span>}
-              {session.atlassianAccessToken && <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">Confluence ✓</span>}
-              {!session.atlassianAccessToken && <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-1 rounded">Confluence ✗</span>}
+              <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">SharePoint ✓</span>
+              {hasAtlassian ? (
+                <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">Confluence ✓</span>
+              ) : (
+                <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-1 rounded cursor-pointer" onClick={() => router.push('/login')}>Confluence ✗</span>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <span className="text-gray-300">{session.user?.name} 님</span>
