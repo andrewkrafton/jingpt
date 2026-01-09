@@ -46,7 +46,7 @@ async function searchSharePoint(query: string, accessToken: string) {
     const data = await res.json();
     const hits = data.value?.[0]?.hitsContainers?.[0]?.hits || [];
 
-    if (hits.length === 0) return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
+    if (hits.length === 0) return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.`, results: [] });
 
     const filteredResults = hits
       .map((hit: any) => {
@@ -74,9 +74,9 @@ async function searchSharePoint(query: string, accessToken: string) {
       .filter((item: any) => item !== null);
 
     if (filteredResults.length === 0) {
-      return JSON.stringify({ message: `"${query}" 검색 결과가 지정된 폴더에 없습니다.` });
+      return JSON.stringify({ message: `"${query}" 검색 결과가 지정된 폴더에 없습니다.`, results: [] });
     }
-    return JSON.stringify(filteredResults);
+    return JSON.stringify({ results: filteredResults });
   } catch (error: any) {
     return JSON.stringify({ error: "검색 실패", detail: error.message });
   }
@@ -100,7 +100,7 @@ async function getConfluenceCloudId(accessToken: string): Promise<string | null>
   }
 }
 
-// Confluence 검색 (CORPDEV 스페이스 + Post-Management 하위만)
+// Confluence 검색
 async function searchConfluence(query: string, accessToken: string) {
   try {
     console.log('=== Confluence Search ===');
@@ -111,13 +111,10 @@ async function searchConfluence(query: string, accessToken: string) {
       return JSON.stringify({ error: "Confluence 연결 실패. 다시 로그인해주세요." });
     }
 
-    // CORPDEV 스페이스 + Post-Management(246364475) 하위 페이지만 검색
     const cql = encodeURIComponent(
-      `(text ~ "${query}" OR title ~ "${query}") AND space = "CORPDEV" AND ancestor = 246364475`
+      `(text ~ "${query}" OR title ~ "${query}") AND space = "CORPDEV"`
     );
-    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=5&expand=body.storage,space,version`;
-    
-    console.log('Search URL:', url);
+    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=7&expand=body.storage,space,version`;
     
     const res = await fetch(url, { 
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
@@ -146,8 +143,8 @@ async function searchConfluence(query: string, accessToken: string) {
         .replace(/\s+/g, ' ')
         .trim();
       
-      if (content.length > 1500) {
-        content = content.slice(0, 1500) + '...';
+      if (content.length > 2500) {
+        content = content.slice(0, 2500) + '...';
       }
 
       return {
@@ -160,9 +157,9 @@ async function searchConfluence(query: string, accessToken: string) {
     });
 
     if (results.length === 0) {
-      return JSON.stringify({ message: `Post-Management 위키에서 "${query}" 검색 결과가 없습니다.` });
+      return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.`, results: [] });
     }
-    return JSON.stringify(results);
+    return JSON.stringify({ results });
   } catch (error: any) {
     console.error('Confluence search error:', error);
     return JSON.stringify({ error: "Confluence 검색 실패", detail: error.message });
@@ -201,8 +198,8 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       .replace(/\s+/g, ' ')
       .trim();
 
-    if (content.length > 8000) {
-      content = content.slice(0, 8000) + '\n\n... (문서가 길어 일부만 표시됨)';
+    if (content.length > 10000) {
+      content = content.slice(0, 10000) + '\n\n... (문서가 길어 일부만 표시됨)';
     }
 
     return JSON.stringify({
@@ -247,7 +244,7 @@ async function readExcelSheet(driveId: string, itemId: string, sheetName: string
     }
     const data = await res.json();
     const values = data.values || [];
-    const maxRows = Math.min(values.length, 100);
+    const maxRows = Math.min(values.length, 150);
     let content = '';
     for (let i = 0; i < maxRows; i++) {
       const row = values[i];
@@ -255,7 +252,7 @@ async function readExcelSheet(driveId: string, itemId: string, sheetName: string
         content += row.map((cell: any) => cell ?? '').join(' | ') + '\n';
       }
     }
-    if (values.length > 100) content += `\n... (총 ${values.length}행 중 100행만 표시)`;
+    if (values.length > 150) content += `\n... (총 ${values.length}행 중 150행만 표시)`;
     return JSON.stringify({ sheetName, totalRows: values.length, content });
   } catch (error: any) {
     return JSON.stringify({ error: "시트 읽기 실패", detail: error.message });
@@ -303,19 +300,56 @@ function cleanMessages(messages: any[]) {
     }
     if (textContent.trim()) cleaned.push({ role: msg.role, content: textContent.trim() });
   }
-  return cleaned.slice(-4);
+  return cleaned.slice(-6);
 }
 
-// Tool 상태 메시지
-function getToolStatusMessage(toolName: string, input: any): string {
-  switch (toolName) {
-    case 'search_sharepoint': return `🔍 SharePoint에서 "${input.query}" 검색 중...`;
-    case 'search_confluence': return `📚 Confluence 위키에서 "${input.query}" 검색 중...`;
-    case 'read_confluence_page': return `📖 Confluence 문서 읽는 중...`;
-    case 'get_excel_sheets': return `📊 Excel 파일 구조 분석 중...`;
-    case 'read_excel_sheet': return `📈 "${input.sheetName}" 시트 읽는 중...`;
-    case 'read_pdf_file': return `📄 PDF 문서 분석 중...`;
-    default: return `⏳ 처리 중...`;
+// 검색 결과 요약 생성 (스트리밍용)
+function summarizeSearchResult(toolName: string, result: string): string {
+  try {
+    const data = JSON.parse(result);
+    
+    if (data.error) {
+      return `❌ ${data.error}`;
+    }
+    
+    if (toolName === 'search_confluence') {
+      const results = data.results || [];
+      if (results.length === 0) {
+        return `📭 검색 결과가 없습니다.`;
+      }
+      const titles = results.slice(0, 3).map((r: any) => `• ${r.title}`).join('\n');
+      return `✅ ${results.length}개 페이지를 찾았습니다!\n${titles}${results.length > 3 ? '\n• ...' : ''}`;
+    }
+    
+    if (toolName === 'search_sharepoint') {
+      const results = data.results || [];
+      if (results.length === 0) {
+        return `📭 검색 결과가 없습니다.`;
+      }
+      const files = results.slice(0, 3).map((r: any) => `• ${r.name}`).join('\n');
+      return `✅ ${results.length}개 파일을 찾았습니다!\n${files}${results.length > 3 ? '\n• ...' : ''}`;
+    }
+    
+    if (toolName === 'get_excel_sheets') {
+      const sheets = data.sheets || [];
+      return `📊 ${sheets.length}개 시트: ${sheets.join(', ')}`;
+    }
+    
+    if (toolName === 'read_excel_sheet') {
+      return `📈 "${data.sheetName}" 시트 로드 완료 (${data.totalRows}행)`;
+    }
+    
+    if (toolName === 'read_confluence_page') {
+      return `📖 "${data.title}" 페이지 로드 완료`;
+    }
+    
+    if (toolName === 'read_pdf_file') {
+      return `📄 PDF 로드 완료 (${data.numPages}페이지)`;
+    }
+    
+    return `✅ 완료`;
+  } catch {
+    return `✅ 완료`;
   }
 }
 
@@ -340,49 +374,33 @@ export async function POST(req: Request) {
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
     
-    // Opus 모델 사용
     const modelId = "claude-opus-4-5-20251101";
 
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
-## 핵심 원칙
-1. **한 번의 검색으로 최대한 정보 추출** - 검색 결과의 content를 꼼꼼히 분석하여 답변
-2. **깊이 있는 분석** - 단순 나열이 아닌, 맥락을 이해하고 인사이트 제공
-3. **정확한 출처** - 모든 답변에 Confluence 페이지 링크 포함
+## 역할
+포트폴리오사에 대한 **심층 분석과 인사이트**를 제공합니다.
 
 ## 데이터 소스
-### Confluence (Post-Management 위키)
-- 검색 범위: CORPDEV 스페이스 > Post-Management 하위 페이지
-- 내용: 포트폴리오사별 투자 정보, PMI 현황, 보드미팅, 계약 조건 등
-- 2PP/ROFN 정보, D&O 보험, 투자 시기/금액 모두 여기서 검색
+### Confluence (CORPDEV 스페이스)
+- 포트폴리오사별 투자 정보, PMI 현황, 보드미팅 기록
+- 2PP/ROFN 권리 정보, D&O 보험 현황
+- 투자 시기, 금액, 지분율, 밸류에이션
 
 ### SharePoint
-- 재무제표/Cap Table: 투자사재무제표 폴더
-- 계약서: Contracts Package 폴더
+- **투자사재무제표**: 분기별 재무제표, Cap Table
+- **Contracts Package**: 계약서, BCA
 
 ## 포트폴리오사 별칭
-| 정식명 | 별칭 |
-|--------|------|
-| Ruckus Games | Ruckus |
-| People Can Fly | PCF |
-| Unknown Worlds | UW |
-| Day 4 Night | D4N |
-| Wolf Haus Games | WHG |
-| The Architects Republic SAS | Arkrep |
-| Gardens Interactive | Gardens |
-| AccelByte | AccelByte |
-| Striking Distance Studios | SDS |
+Ruckus Games=Ruckus, People Can Fly=PCF, Unknown Worlds=UW, Day 4 Night=D4N,
+Wolf Haus Games=WHG, The Architects Republic SAS=Arkrep, Gardens Interactive=Gardens,
+Torpor Games=Torpor, Striking Distance Studios=SDS, AccelByte=AccelByte
 
-## 검색 전략
-- 회사 정보: "[회사명]" 또는 "[정식명]"으로 검색
-- 계약/권리: "2PP", "ROFN", "Xsolla" 등 키워드로 검색
-- 지분율: SharePoint에서 "[회사명] Cap Table" 검색
-
-## 답변 스타일
-- 검색 결과를 분석하여 **구조화된 표**로 정리
-- 중요한 수치, 날짜, 조건은 **강조**
-- 출처 페이지 **링크** 반드시 포함
-- 추가로 확인이 필요한 사항이 있으면 안내`;
+## 답변 원칙
+1. **검색 결과를 꼼꼼히 분석** - content 필드에 있는 모든 정보 활용
+2. **구조화된 표로 정리** - 핵심 수치, 날짜, 조건을 명확하게
+3. **인사이트 제공** - 단순 나열이 아닌 분석과 시사점
+4. **출처 링크 포함** - 모든 답변에 Confluence/SharePoint 링크`;
 
     const tools: any[] = [
       {
@@ -410,7 +428,7 @@ export async function POST(req: Request) {
     if (hasConfluence) {
       tools.push({
         name: "search_confluence",
-        description: "Confluence Post-Management 위키 검색. CORPDEV 스페이스의 포트폴리오사 정보만 검색됨. 결과에 페이지 본문(content)이 포함되어 있으니 바로 분석하여 답변할 것.",
+        description: "Confluence CORPDEV 스페이스 검색. 결과에 페이지 본문(content)이 포함됨.",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       });
       tools.push({
@@ -424,9 +442,15 @@ export async function POST(req: Request) {
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
 
+    // 스트리밍 헬퍼 함수들
     const sendStatus = async (status: string) => {
       await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'status', message: status })}\n\n`));
     };
+    
+    const sendProgress = async (progress: string) => {
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'progress', message: progress })}\n\n`));
+    };
+    
     const sendFinal = async (content: any) => {
       await writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'final', content })}\n\n`));
       await writer.close();
@@ -438,19 +462,30 @@ export async function POST(req: Request) {
 
         let currentMessages = [...cleanedMessages];
         let response = await anthropic.messages.create({
-          model: modelId, max_tokens: 4096, system: systemPrompt, messages: currentMessages, tools
+          model: modelId, max_tokens: 8192, system: systemPrompt, messages: currentMessages, tools
         });
 
         let loopCount = 0;
-        while (response.stop_reason === 'tool_use' && loopCount < 8) {
+        while (response.stop_reason === 'tool_use' && loopCount < 10) {
           loopCount++;
           const toolCalls = response.content.filter((c: any) => c.type === 'tool_use');
           const toolResults: any[] = [];
 
           for (const toolCall of toolCalls) {
             const tc = toolCall as any;
-            await sendStatus(getToolStatusMessage(tc.name, tc.input));
+            
+            // 1. 도구 실행 전 상태 표시
+            const toolLabels: Record<string, string> = {
+              'search_confluence': `📚 Confluence에서 "${tc.input.query}" 검색 중...`,
+              'search_sharepoint': `🔍 SharePoint에서 "${tc.input.query}" 검색 중...`,
+              'read_confluence_page': `📖 Confluence 페이지 읽는 중...`,
+              'get_excel_sheets': `📊 Excel 시트 목록 조회 중...`,
+              'read_excel_sheet': `📈 "${tc.input.sheetName}" 시트 읽는 중...`,
+              'read_pdf_file': `📄 PDF 파일 읽는 중...`
+            };
+            await sendStatus(toolLabels[tc.name] || '⏳ 처리 중...');
 
+            // 2. 도구 실행
             let result = '';
             switch (tc.name) {
               case 'search_sharepoint':
@@ -475,6 +510,10 @@ export async function POST(req: Request) {
                 result = JSON.stringify({ error: "알 수 없는 도구" });
             }
 
+            // 3. 도구 실행 결과 요약 표시 (스트리밍!)
+            const summary = summarizeSearchResult(tc.name, result);
+            await sendProgress(summary);
+
             toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
           }
 
@@ -484,9 +523,9 @@ export async function POST(req: Request) {
             { role: 'user', content: toolResults }
           ];
 
-          await sendStatus('✨ 답변 생성 중...');
+          await sendStatus('✨ 분석 중...');
           response = await anthropic.messages.create({
-            model: modelId, max_tokens: 4096, system: systemPrompt, messages: currentMessages, tools
+            model: modelId, max_tokens: 8192, system: systemPrompt, messages: currentMessages, tools
           });
         }
 
