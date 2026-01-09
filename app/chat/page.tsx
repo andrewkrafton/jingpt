@@ -89,6 +89,16 @@ export default function ChatPage() {
     }
   }, [status, router]);
 
+  // 커스텀 로그아웃 (Atlassian 쿠키도 삭제)
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      // 에러 무시
+    }
+    signOut({ callbackUrl: '/login' });
+  };
+
   const startNewChat = () => {
     const newChat: Chat = {
       id: Date.now().toString(),
@@ -310,7 +320,7 @@ export default function ChatPage() {
         <div className="p-3 border-t border-gray-800 flex-shrink-0">
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-400 truncate">{session.user?.name}</span>
-            <button onClick={() => signOut()} className="text-gray-500 hover:text-white">
+            <button onClick={handleLogout} className="text-gray-500 hover:text-white">
               <LogOut size={16} />
             </button>
           </div>
