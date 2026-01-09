@@ -100,7 +100,7 @@ async function getConfluenceCloudId(accessToken: string): Promise<string | null>
   }
 }
 
-// Confluence 검색 (본문 포함!)
+// Confluence 검색 (본문 포함, 최적화)
 async function searchConfluence(query: string, accessToken: string) {
   try {
     console.log('=== Confluence Search ===');
@@ -111,11 +111,9 @@ async function searchConfluence(query: string, accessToken: string) {
       return JSON.stringify({ error: "Confluence 연결 실패. 다시 로그인해주세요." });
     }
 
-    // body.storage 포함해서 검색 - 페이지 내용도 같이 가져옴!
+    // 검색 결과 5개로 제한 (토큰 절약)
     const cql = encodeURIComponent(`text ~ "${query}" OR title ~ "${query}"`);
-    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=10&expand=body.storage,space,version`;
-    
-    console.log('Search URL:', url);
+    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=5&expand=body.storage,space,version`;
     
     const res = await fetch(url, { 
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
@@ -136,7 +134,7 @@ async function searchConfluence(query: string, accessToken: string) {
       // HTML에서 텍스트 추출
       let content = page.body?.storage?.value || '';
       content = content
-        .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, '[매크로]')
+        .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, '')
         .replace(/<[^>]*>/g, ' ')
         .replace(/&nbsp;/g, ' ')
         .replace(/&lt;/g, '<')
@@ -145,24 +143,22 @@ async function searchConfluence(query: string, accessToken: string) {
         .replace(/\s+/g, ' ')
         .trim();
       
-      // 내용이 너무 길면 자르기
-      if (content.length > 3000) {
-        content = content.slice(0, 3000) + '... (생략)';
+      // 본문 1500자로 제한 (토큰 절약)
+      if (content.length > 1500) {
+        content = content.slice(0, 1500) + '...';
       }
 
       return {
         id: page.id,
         title: page.title,
         space: page.space?.name || '',
-        spaceKey: page.space?.key || '',
         url: `https://krafton.atlassian.net/wiki${page._links?.webui || ''}`,
-        lastModified: page.version?.when,
-        content: content  // 본문 포함!
+        content: content
       };
     });
 
     if (results.length === 0) {
-      return JSON.stringify({ message: `Confluence에서 "${query}" 검색 결과가 없습니다.` });
+      return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
     }
     return JSON.stringify(results);
   } catch (error: any) {
@@ -171,35 +167,25 @@ async function searchConfluence(query: string, accessToken: string) {
   }
 }
 
-// Confluence 페이지 읽기 (V1 fallback)
+// Confluence 페이지 읽기
 async function readConfluencePage(pageId: string, accessToken: string) {
   try {
     console.log('=== Reading Confluence Page ===');
-    console.log('Page ID:', pageId);
     
     const cloudId = await getConfluenceCloudId(accessToken);
     if (!cloudId) {
       return JSON.stringify({ error: "Confluence 연결 실패" });
     }
 
-    // V1 API 시도 (body.view 사용)
     const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/${pageId}?expand=body.view,space,version`;
-    console.log('Page URL:', url);
     
     const res = await fetch(url, { 
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
     });
 
-    console.log('Page read status:', res.status);
-
     if (!res.ok) {
-      const errorText = await res.text();
-      console.error('Page read error:', res.status, errorText);
-      
-      // 실패하면 검색으로 대체 안내
       return JSON.stringify({ 
-        error: "페이지 직접 읽기 실패",
-        suggestion: "search_confluence로 해당 페이지 제목을 검색하면 내용을 확인할 수 있습니다.",
+        error: "페이지 읽기 실패. search_confluence로 제목 검색을 시도해주세요.",
         pageId: pageId
       });
     }
@@ -213,8 +199,8 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       .replace(/\s+/g, ' ')
       .trim();
 
-    if (content.length > 10000) {
-      content = content.slice(0, 10000) + '\n\n... (문서가 길어 일부만 표시됨)';
+    if (content.length > 8000) {
+      content = content.slice(0, 8000) + '\n\n... (문서가 길어 일부만 표시됨)';
     }
 
     return JSON.stringify({
@@ -224,7 +210,6 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       content: content
     });
   } catch (error: any) {
-    console.error('Page read exception:', error);
     return JSON.stringify({ error: "페이지 읽기 실패", detail: error.message });
   }
 }
@@ -316,7 +301,7 @@ function cleanMessages(messages: any[]) {
     }
     if (textContent.trim()) cleaned.push({ role: msg.role, content: textContent.trim() });
   }
-  return cleaned.slice(-6);
+  return cleaned.slice(-4); // 최근 4개만 (토큰 절약)
 }
 
 // Tool 상태 메시지
@@ -352,88 +337,52 @@ export async function POST(req: Request) {
 
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
-    const modelId = "claude-opus-4-5-20251101"; 
+    const modelId = "claude-sonnet-4-20250514"; // Sonnet으로 변경 (더 빠름)
 
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
+## 핵심 원칙
+1. **한 번의 검색으로 최대한 정보 추출** - 검색 결과의 content에 필요한 정보가 있으면 바로 답변
+2. **반복 검색 금지** - 같은 주제로 여러 번 검색하지 말 것
+3. **즉시 답변** - 정보를 찾으면 바로 정리해서 답변
+
 ## 데이터 소스
-### 1. SharePoint
-- **재무제표/Cap Table**: 투자사재무제표 폴더 (분기별 > 회사명 > Cap Table)
-- **계약서**: Contracts Package 폴더 (회사명 > BCA 등)
-
-### 2. Confluence ${hasConfluence ? '✅' : '❌'}
-- **Post-Management 위키**: 포트폴리오사별 히스토리, PMI 현황, 보드미팅
-- **2PP Details 페이지**: https://krafton.atlassian.net/wiki/x/vf6_Lw
-- **D&O 보험 페이지**: https://krafton.atlassian.net/wiki/spaces/CORPDEV/pages/651729531
-
-## 🔍 검색 가이드 (이 순서대로 검색!)
-
-### 지분율 질문
-→ SharePoint > 투자사재무제표 > [최신분기] > [회사명] > Cap Table
-- "Ruckus 지분율" → search_sharepoint("Ruckus Cap Table 2025")
-
-### ROFN, 2PP, 퍼블리싱권한 질문
-→ 1순위: Confluence "2PP Details" 또는 회사 위키
-→ 2순위: SharePoint > Contracts Package > BCA
-- "2PP 있는 회사" → search_confluence("2PP Details")
-- "Day4Night ROFN" → search_confluence("Day 4 Night ROFN")
-
-### 보험/D&O 질문
-→ Confluence D&O 보험 페이지 검색
-- "이사 보험" → search_confluence("D&O 보험")
-
-### 투자시기/금액 질문
-→ Confluence 회사별 위키 페이지
-- "Antistatic 투자 금액" → search_confluence("Antistatic Studios 투자")
+- **SharePoint**: 재무제표, Cap Table, 계약서
+- **Confluence**: 포트폴리오사 위키, 2PP/ROFN 정보, D&O 보험
 
 ## 포트폴리오사 별칭
-| 정식명 | 별칭 |
-|--------|------|
-| Ruckus Games | Ruckus |
-| People Can Fly | PCF |
-| Unknown Worlds | UW |
-| Day 4 Night | D4N |
-| Wolf Haus Games | WHG |
-| The Architects Republic SAS | Arkrep |
-| NB Creative Proprietary Asset | Cor3 |
-| Coconut horse, Inc. | Cyancook |
-| Gardens Interactive | Gardens |
-| Antistatic Studios | Antistatic |
+Ruckus Games=Ruckus, People Can Fly=PCF, Unknown Worlds=UW, Day 4 Night=D4N, 
+Wolf Haus Games=WHG, The Architects Republic SAS=Arkrep, Gardens Interactive=Gardens
 
-## 도구 사용
-1. **search_sharepoint**: 재무제표, Cap Table, 계약서 검색
-2. **get_excel_sheets** / **read_excel_sheet**: Excel 파일 읽기
-3. **read_pdf_file**: PDF 파일 읽기
-${hasConfluence ? `4. **search_confluence**: 위키 검색 (검색 시 페이지 본문도 함께 가져옴)
-5. **read_confluence_page**: 특정 페이지 읽기 (실패 시 search_confluence 사용)` : ''}
+## 검색 팁
+- 회사 정보: "[회사명]" 또는 "[회사명] 투자"로 검색
+- 2PP/ROFN: "2PP Details" 검색
+- 지분율: SharePoint에서 "[회사명] Cap Table" 검색
 
-## 답변 원칙
-1. 검색 가이드 순서대로 적절한 소스 먼저 검색
-2. search_confluence 결과에 본문(content)이 포함되어 있으니 활용할 것
-3. 출처를 클릭 가능한 링크로 제공
-4. 최신 분기 데이터 우선 (지분율은 반드시 최신 Cap Table)
-5. 찾을 수 없으면 솔직히 "해당 정보를 찾을 수 없습니다" 답변
-6. 한국어로 친절하게`;
+## 답변 형식
+- 검색 결과에서 핵심 정보만 추출하여 표로 정리
+- 출처 링크 포함
+- 한국어로 친절하게`;
 
     const tools: any[] = [
       {
         name: "search_sharepoint",
-        description: "SharePoint에서 파일 검색 (재무제표, Cap Table, 계약서). 지분율은 '[회사명] Cap Table [연도]'로 검색.",
+        description: "SharePoint 파일 검색",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       },
       {
         name: "get_excel_sheets",
-        description: "Excel 시트 목록 조회",
+        description: "Excel 시트 목록",
         input_schema: { type: "object", properties: { driveId: { type: "string" }, itemId: { type: "string" } }, required: ["driveId", "itemId"] }
       },
       {
         name: "read_excel_sheet",
-        description: "Excel 시트 내용 읽기",
+        description: "Excel 시트 읽기",
         input_schema: { type: "object", properties: { driveId: { type: "string" }, itemId: { type: "string" }, sheetName: { type: "string" } }, required: ["driveId", "itemId", "sheetName"] }
       },
       {
         name: "read_pdf_file",
-        description: "PDF 파일 내용 읽기",
+        description: "PDF 파일 읽기",
         input_schema: { type: "object", properties: { driveId: { type: "string" }, itemId: { type: "string" } }, required: ["driveId", "itemId"] }
       }
     ];
@@ -441,12 +390,12 @@ ${hasConfluence ? `4. **search_confluence**: 위키 검색 (검색 시 페이지
     if (hasConfluence) {
       tools.push({
         name: "search_confluence",
-        description: "Confluence 위키 검색. 검색 결과에 페이지 본문(content)이 포함됨. 2PP/ROFN은 '2PP Details', 보험은 'D&O 보험', 회사정보는 '[회사명] 투자'로 검색.",
+        description: "Confluence 검색. 결과에 페이지 본문(content)이 포함되어 있으니 추가 검색 없이 바로 활용할 것.",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       });
       tools.push({
         name: "read_confluence_page",
-        description: "Confluence 페이지 내용 읽기. 실패 시 search_confluence로 제목 검색 권장.",
+        description: "특정 페이지 읽기 (pageId 필요)",
         input_schema: { type: "object", properties: { pageId: { type: "string" } }, required: ["pageId"] }
       });
     }
@@ -469,11 +418,11 @@ ${hasConfluence ? `4. **search_confluence**: 위키 검색 (검색 시 페이지
 
         let currentMessages = [...cleanedMessages];
         let response = await anthropic.messages.create({
-          model: modelId, max_tokens: 8192, system: systemPrompt, messages: currentMessages, tools
+          model: modelId, max_tokens: 4096, system: systemPrompt, messages: currentMessages, tools
         });
 
         let loopCount = 0;
-        while (response.stop_reason === 'tool_use' && loopCount < 5) {
+        while (response.stop_reason === 'tool_use' && loopCount < 8) {
           loopCount++;
           const toolCalls = response.content.filter((c: any) => c.type === 'tool_use');
           const toolResults: any[] = [];
@@ -517,7 +466,7 @@ ${hasConfluence ? `4. **search_confluence**: 위키 검색 (검색 시 페이지
 
           await sendStatus('✨ 답변 생성 중...');
           response = await anthropic.messages.create({
-            model: modelId, max_tokens: 8192, system: systemPrompt, messages: currentMessages, tools
+            model: modelId, max_tokens: 4096, system: systemPrompt, messages: currentMessages, tools
           });
         }
 
