@@ -100,7 +100,7 @@ async function getConfluenceCloudId(accessToken: string): Promise<string | null>
   }
 }
 
-// Confluence 검색 (본문 포함, 최적화)
+// Confluence 검색 (CORPDEV 스페이스 + Post-Management 하위만)
 async function searchConfluence(query: string, accessToken: string) {
   try {
     console.log('=== Confluence Search ===');
@@ -111,9 +111,13 @@ async function searchConfluence(query: string, accessToken: string) {
       return JSON.stringify({ error: "Confluence 연결 실패. 다시 로그인해주세요." });
     }
 
-    // 검색 결과 5개로 제한 (토큰 절약)
-    const cql = encodeURIComponent(`text ~ "${query}" OR title ~ "${query}"`);
+    // CORPDEV 스페이스 + Post-Management(246364475) 하위 페이지만 검색
+    const cql = encodeURIComponent(
+      `(text ~ "${query}" OR title ~ "${query}") AND space = "CORPDEV" AND ancestor = 246364475`
+    );
     const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=5&expand=body.storage,space,version`;
+    
+    console.log('Search URL:', url);
     
     const res = await fetch(url, { 
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
@@ -131,7 +135,6 @@ async function searchConfluence(query: string, accessToken: string) {
     console.log('Results count:', data.results?.length || 0);
     
     const results = (data.results || []).map((page: any) => {
-      // HTML에서 텍스트 추출
       let content = page.body?.storage?.value || '';
       content = content
         .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, '')
@@ -143,7 +146,6 @@ async function searchConfluence(query: string, accessToken: string) {
         .replace(/\s+/g, ' ')
         .trim();
       
-      // 본문 1500자로 제한 (토큰 절약)
       if (content.length > 1500) {
         content = content.slice(0, 1500) + '...';
       }
@@ -158,7 +160,7 @@ async function searchConfluence(query: string, accessToken: string) {
     });
 
     if (results.length === 0) {
-      return JSON.stringify({ message: `"${query}" 검색 결과가 없습니다.` });
+      return JSON.stringify({ message: `Post-Management 위키에서 "${query}" 검색 결과가 없습니다.` });
     }
     return JSON.stringify(results);
   } catch (error: any) {
@@ -301,14 +303,14 @@ function cleanMessages(messages: any[]) {
     }
     if (textContent.trim()) cleaned.push({ role: msg.role, content: textContent.trim() });
   }
-  return cleaned.slice(-4); // 최근 4개만 (토큰 절약)
+  return cleaned.slice(-4);
 }
 
 // Tool 상태 메시지
 function getToolStatusMessage(toolName: string, input: any): string {
   switch (toolName) {
     case 'search_sharepoint': return `🔍 SharePoint에서 "${input.query}" 검색 중...`;
-    case 'search_confluence': return `📚 Confluence에서 "${input.query}" 검색 중...`;
+    case 'search_confluence': return `📚 Confluence 위키에서 "${input.query}" 검색 중...`;
     case 'read_confluence_page': return `📖 Confluence 문서 읽는 중...`;
     case 'get_excel_sheets': return `📊 Excel 파일 구조 분석 중...`;
     case 'read_excel_sheet': return `📈 "${input.sheetName}" 시트 읽는 중...`;
@@ -337,37 +339,55 @@ export async function POST(req: Request) {
 
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
-    const modelId = "claude-sonnet-4-20250514"; // Sonnet으로 변경 (더 빠름)
+    
+    // Opus 모델 사용
+    const modelId = "claude-opus-4-5-20251101";
 
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
 ## 핵심 원칙
-1. **한 번의 검색으로 최대한 정보 추출** - 검색 결과의 content에 필요한 정보가 있으면 바로 답변
-2. **반복 검색 금지** - 같은 주제로 여러 번 검색하지 말 것
-3. **즉시 답변** - 정보를 찾으면 바로 정리해서 답변
+1. **한 번의 검색으로 최대한 정보 추출** - 검색 결과의 content를 꼼꼼히 분석하여 답변
+2. **깊이 있는 분석** - 단순 나열이 아닌, 맥락을 이해하고 인사이트 제공
+3. **정확한 출처** - 모든 답변에 Confluence 페이지 링크 포함
 
 ## 데이터 소스
-- **SharePoint**: 재무제표, Cap Table, 계약서
-- **Confluence**: 포트폴리오사 위키, 2PP/ROFN 정보, D&O 보험
+### Confluence (Post-Management 위키)
+- 검색 범위: CORPDEV 스페이스 > Post-Management 하위 페이지
+- 내용: 포트폴리오사별 투자 정보, PMI 현황, 보드미팅, 계약 조건 등
+- 2PP/ROFN 정보, D&O 보험, 투자 시기/금액 모두 여기서 검색
+
+### SharePoint
+- 재무제표/Cap Table: 투자사재무제표 폴더
+- 계약서: Contracts Package 폴더
 
 ## 포트폴리오사 별칭
-Ruckus Games=Ruckus, People Can Fly=PCF, Unknown Worlds=UW, Day 4 Night=D4N, 
-Wolf Haus Games=WHG, The Architects Republic SAS=Arkrep, Gardens Interactive=Gardens
+| 정식명 | 별칭 |
+|--------|------|
+| Ruckus Games | Ruckus |
+| People Can Fly | PCF |
+| Unknown Worlds | UW |
+| Day 4 Night | D4N |
+| Wolf Haus Games | WHG |
+| The Architects Republic SAS | Arkrep |
+| Gardens Interactive | Gardens |
+| AccelByte | AccelByte |
+| Striking Distance Studios | SDS |
 
-## 검색 팁
-- 회사 정보: "[회사명]" 또는 "[회사명] 투자"로 검색
-- 2PP/ROFN: "2PP Details" 검색
+## 검색 전략
+- 회사 정보: "[회사명]" 또는 "[정식명]"으로 검색
+- 계약/권리: "2PP", "ROFN", "Xsolla" 등 키워드로 검색
 - 지분율: SharePoint에서 "[회사명] Cap Table" 검색
 
-## 답변 형식
-- 검색 결과에서 핵심 정보만 추출하여 표로 정리
-- 출처 링크 포함
-- 한국어로 친절하게`;
+## 답변 스타일
+- 검색 결과를 분석하여 **구조화된 표**로 정리
+- 중요한 수치, 날짜, 조건은 **강조**
+- 출처 페이지 **링크** 반드시 포함
+- 추가로 확인이 필요한 사항이 있으면 안내`;
 
     const tools: any[] = [
       {
         name: "search_sharepoint",
-        description: "SharePoint 파일 검색",
+        description: "SharePoint 파일 검색 (재무제표, Cap Table, 계약서)",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       },
       {
@@ -390,12 +410,12 @@ Wolf Haus Games=WHG, The Architects Republic SAS=Arkrep, Gardens Interactive=Gar
     if (hasConfluence) {
       tools.push({
         name: "search_confluence",
-        description: "Confluence 검색. 결과에 페이지 본문(content)이 포함되어 있으니 추가 검색 없이 바로 활용할 것.",
+        description: "Confluence Post-Management 위키 검색. CORPDEV 스페이스의 포트폴리오사 정보만 검색됨. 결과에 페이지 본문(content)이 포함되어 있으니 바로 분석하여 답변할 것.",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       });
       tools.push({
         name: "read_confluence_page",
-        description: "특정 페이지 읽기 (pageId 필요)",
+        description: "특정 Confluence 페이지 전체 내용 읽기",
         input_schema: { type: "object", properties: { pageId: { type: "string" } }, required: ["pageId"] }
       });
     }
