@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 
 export async function GET() {
   const clientId = process.env.ATLASSIAN_CLIENT_ID;
-  const redirectUri = `${process.env.NEXTAUTH_URL}/api/auth/atlassian/callback`;
+  const baseUrl = process.env.NEXTAUTH_URL || 'https://jingpt-two.vercel.app';
+  const redirectUri = `${baseUrl}/api/auth/atlassian/callback`;
   
   const authUrl = new URL('https://auth.atlassian.com/authorize');
   authUrl.searchParams.set('audience', 'api.atlassian.com');
