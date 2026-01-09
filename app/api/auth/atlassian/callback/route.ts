@@ -1,18 +1,18 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
   const error = searchParams.get('error');
 
+  const baseUrl = process.env.NEXTAUTH_URL || 'https://jingpt-two.vercel.app';
+
   if (error || !code) {
     console.error('Atlassian OAuth 에러:', error);
-    return NextResponse.redirect(`${process.env.NEXTAUTH_URL}/login?error=atlassian_failed`);
+    return NextResponse.redirect(`${baseUrl}/login?error=atlassian_failed`);
   }
 
   try {
-    // 토큰 교환
     const tokenRes = await fetch('https://auth.atlassian.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -21,43 +21,45 @@ export async function GET(request: Request) {
         client_id: process.env.ATLASSIAN_CLIENT_ID,
         client_secret: process.env.ATLASSIAN_CLIENT_SECRET,
         code: code,
-        redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/atlassian/callback`,
+        redirect_uri: `${baseUrl}/api/auth/atlassian/callback`,
       }),
     });
 
     if (!tokenRes.ok) {
       const errorData = await tokenRes.json();
       console.error('Atlassian 토큰 교환 실패:', errorData);
-      return NextResponse.redirect(`${process.env.NEXTAUTH_URL}/login?error=token_exchange_failed`);
+      return NextResponse.redirect(`${baseUrl}/login?error=token_exchange_failed`);
     }
 
     const tokens = await tokenRes.json();
+    console.log('Atlassian 토큰 발급 성공');
     
-    // 쿠키에 토큰 저장 (7일)
-    const cookieStore = await cookies();
-    cookieStore.set('atlassian_access_token', tokens.access_token, {
+    // 쿠키와 함께 리다이렉트
+    const response = NextResponse.redirect(`${baseUrl}/login?atlassian=success`);
+    
+    // 쿠키 설정
+    response.cookies.set('atlassian_access_token', tokens.access_token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: true,
       sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7, // 7일
+      maxAge: 60 * 60 * 24 * 7,
       path: '/',
     });
     
     if (tokens.refresh_token) {
-      cookieStore.set('atlassian_refresh_token', tokens.refresh_token, {
+      response.cookies.set('atlassian_refresh_token', tokens.refresh_token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: true,
         sameSite: 'lax',
-        maxAge: 60 * 60 * 24 * 30, // 30일
+        maxAge: 60 * 60 * 24 * 30,
         path: '/',
       });
     }
 
-    // 로그인 페이지로 리다이렉트
-    return NextResponse.redirect(`${process.env.NEXTAUTH_URL}/login?atlassian=success`);
+    return response;
     
   } catch (error) {
     console.error('Atlassian OAuth 처리 에러:', error);
-    return NextResponse.redirect(`${process.env.NEXTAUTH_URL}/login?error=oauth_error`);
+    return NextResponse.redirect(`${baseUrl}/login?error=oauth_error`);
   }
 }
