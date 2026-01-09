@@ -85,28 +85,14 @@ async function searchSharePoint(query: string, accessToken: string) {
 // Confluence Cloud ID 가져오기
 async function getConfluenceCloudId(accessToken: string): Promise<string | null> {
   try {
-    console.log('=== Getting Confluence Cloud ID ===');
-    console.log('Token length:', accessToken?.length);
-    
     const res = await fetch('https://api.atlassian.com/oauth/token/accessible-resources', {
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
     });
     
-    console.log('Accessible resources status:', res.status);
-    
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error('Accessible resources error:', errorText);
-      return null;
-    }
+    if (!res.ok) return null;
     
     const sites = await res.json();
-    console.log('Sites found:', sites.length);
-    console.log('Sites:', JSON.stringify(sites.map((s: any) => ({ id: s.id, url: s.url, name: s.name }))));
-    
     const kraftonSite = sites.find((s: any) => s.url.includes('krafton')) || sites[0];
-    console.log('Selected site:', kraftonSite?.url);
-    
     return kraftonSite?.id || null;
   } catch (error) {
     console.error("Cloud ID 조회 실패:", error);
@@ -114,40 +100,35 @@ async function getConfluenceCloudId(accessToken: string): Promise<string | null>
   }
 }
 
-// Confluence 검색
+// Confluence 검색 (V2 API)
 async function searchConfluence(query: string, accessToken: string) {
   try {
-    console.log('=== Confluence Search Started ===');
+    console.log('=== Confluence Search (V2) ===');
     console.log('Query:', query);
-    console.log('Token length:', accessToken?.length);
     
     const cloudId = await getConfluenceCloudId(accessToken);
     if (!cloudId) {
-      console.error('Cloud ID not found');
       return JSON.stringify({ error: "Confluence 연결 실패. 다시 로그인해주세요." });
     }
 
-    console.log('Cloud ID:', cloudId);
-
+    // V2 API 사용 - CQL 검색
     const cql = encodeURIComponent(`text ~ "${query}" OR title ~ "${query}"`);
-    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=10&expand=body.storage,space,version`;
-    
-    console.log('Search URL:', url);
+    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/search?cql=${cql}&limit=15&expand=space,version`;
     
     const res = await fetch(url, { 
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
     });
 
-    console.log('Search response status:', res.status);
+    console.log('Search status:', res.status);
 
     if (!res.ok) {
       const errorText = await res.text();
       console.error('Search error:', errorText);
-      return JSON.stringify({ error: "Confluence 검색 실패", detail: errorText });
+      return JSON.stringify({ error: "Confluence 검색 실패" });
     }
 
     const data = await res.json();
-    console.log('Search results count:', data.results?.length || 0);
+    console.log('Results count:', data.results?.length || 0);
     
     const results = (data.results || []).map((page: any) => ({
       id: page.id,
@@ -156,8 +137,7 @@ async function searchConfluence(query: string, accessToken: string) {
       space: page.space?.name || '',
       spaceKey: page.space?.key || '',
       url: `https://krafton.atlassian.net/wiki${page._links?.webui || ''}`,
-      lastModified: page.version?.when,
-      excerpt: page.body?.storage?.value?.replace(/<[^>]*>/g, ' ').slice(0, 300) || ''
+      lastModified: page.version?.when
     }));
 
     if (results.length === 0) {
@@ -170,20 +150,20 @@ async function searchConfluence(query: string, accessToken: string) {
   }
 }
 
-// Confluence 페이지 내용 읽기
+// Confluence 페이지 읽기 (V2 API)
 async function readConfluencePage(pageId: string, accessToken: string) {
   try {
-    console.log('=== Reading Confluence Page ===');
+    console.log('=== Reading Confluence Page (V2) ===');
     console.log('Page ID:', pageId);
     
     const cloudId = await getConfluenceCloudId(accessToken);
     if (!cloudId) {
-      console.error('Cloud ID not found for page read');
       return JSON.stringify({ error: "Confluence 연결 실패" });
     }
 
-    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/rest/api/content/${pageId}?expand=body.storage,space,version`;
-    console.log('Page URL:', url);
+    // V2 API 사용
+    const url = `https://api.atlassian.com/ex/confluence/${cloudId}/wiki/api/v2/pages/${pageId}?body-format=storage`;
+    console.log('V2 API URL:', url);
     
     const res = await fetch(url, { 
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' } 
@@ -194,16 +174,19 @@ async function readConfluencePage(pageId: string, accessToken: string) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error('Page read error:', res.status, errorText);
-      return JSON.stringify({ 
-        error: "페이지 읽기 실패", 
-        status: res.status,
-        detail: errorText 
-      });
+      
+      // 403/404면 권한 없음
+      if (res.status === 403 || res.status === 404) {
+        return JSON.stringify({ 
+          error: "페이지 접근 권한이 없습니다.",
+          suggestion: "해당 페이지는 특정 권한이 필요합니다. Confluence에서 직접 확인해주세요."
+        });
+      }
+      return JSON.stringify({ error: "페이지 읽기 실패", status: res.status });
     }
 
     const page = await res.json();
     console.log('Page title:', page.title);
-    console.log('Page space:', page.space?.name);
     
     let content = page.body?.storage?.value || '';
     content = content
@@ -216,17 +199,15 @@ async function readConfluencePage(pageId: string, accessToken: string) {
       .replace(/\s+/g, ' ')
       .trim();
 
-    console.log('Content length:', content.length);
-
-    if (content.length > 10000) {
-      content = content.slice(0, 10000) + '\n\n... (문서가 길어 일부만 표시됨)';
+    if (content.length > 12000) {
+      content = content.slice(0, 12000) + '\n\n... (문서가 길어 일부만 표시됨)';
     }
 
     return JSON.stringify({
       title: page.title,
-      space: page.space?.name,
-      url: `https://krafton.atlassian.net/wiki${page._links?.webui || ''}`,
-      lastModified: page.version?.when,
+      spaceId: page.spaceId,
+      url: `https://krafton.atlassian.net/wiki/pages/${pageId}`,
+      lastModified: page.version?.createdAt,
       content: content
     });
   } catch (error: any) {
@@ -352,14 +333,9 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ error: "SharePoint 인증이 필요합니다." }), { status: 401 });
     }
 
-    // Atlassian 토큰은 쿠키에서 가져오기
     const cookieStore = cookies();
     const atlassianToken = cookieStore.get('atlassian_access_token')?.value;
     const hasConfluence = !!atlassianToken;
-
-    console.log('=== Chat API Called ===');
-    console.log('Has Confluence token:', hasConfluence);
-    console.log('Confluence token length:', atlassianToken?.length || 0);
 
     const { messages } = await req.json();
     const cleanedMessages = cleanMessages(messages);
@@ -367,47 +343,68 @@ export async function POST(req: Request) {
 
     const systemPrompt = `당신은 크래프톤 포트폴리오 관리 AI 어시스턴트 "진피티"입니다.
 
-## 핵심 역할
-SharePoint와 Confluence에서 포트폴리오사 문서를 검색하고 답변합니다.
-
 ## 데이터 소스
+### 1. SharePoint
+- **재무제표/Cap Table**: 투자사재무제표 폴더 (분기별 > 회사명 > Cap Table)
+- **계약서**: Contracts Package 폴더 (회사명 > BCA 등)
 
-### 1. SharePoint (재무제표/계약서)
-- **재무제표/Cap Table**: Financialinstruments > 투자사재무제표
-- **계약서**: Corp.Dev.StrategyDiv > Contracts Package
+### 2. Confluence ${hasConfluence ? '✅' : '❌'}
+- **Post-Management 위키**: 포트폴리오사별 히스토리, PMI 현황, 보드미팅
+- **2PP Details 페이지**: https://krafton.atlassian.net/wiki/x/vf6_Lw
+- **D&O 보험 페이지**: https://krafton.atlassian.net/wiki/spaces/CORPDEV/pages/651729531
 
-### 2. Confluence (위키) ${hasConfluence ? '✅ 연결됨' : '❌ 연결 안됨'}
-- 포트폴리오사 정보, 회의록, 프로젝트 문서 등
-${!hasConfluence ? '- ⚠️ Confluence 검색이 불가능합니다. 위키 관련 질문에 답변할 수 없습니다.' : ''}
+## 🔍 검색 가이드 (이 순서대로 검색!)
 
-## 사용 가능한 도구
-1. **search_sharepoint**: SharePoint 파일 검색
-2. **get_excel_sheets**: Excel 시트 목록 조회
-3. **read_excel_sheet**: Excel 시트 읽기
-4. **read_pdf_file**: PDF 파일 읽기
-${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
-6. **read_confluence_page**: Confluence 페이지 내용 읽기` : ''}
+### 지분율 질문
+→ SharePoint > 투자사재무제표 > [최신분기] > [회사명] > Cap Table
+- "Ruckus 지분율" → search_sharepoint("Ruckus Cap Table 2025")
+
+### ROFN, 2PP, 퍼블리싱권한 질문
+→ 1순위: Confluence "2PP Details" 또는 회사 위키
+→ 2순위: SharePoint > Contracts Package > BCA
+- "2PP 있는 회사" → search_confluence("2PP Details")
+- "Day4Night ROFN" → search_confluence("Day 4 Night ROFN")
+
+### 보험/D&O 질문
+→ Confluence D&O 보험 페이지 검색
+- "이사 보험" → search_confluence("D&O 보험") 또는 read_confluence_page("651729531")
+
+### 투자시기/금액 질문
+→ Confluence 회사별 위키 페이지
+- "Antistatic 투자 금액" → search_confluence("Antistatic Studios 투자")
 
 ## 포트폴리오사 별칭
-- Ruckus Games = Ruckus
-- Antistatic Studios = Antistatic
-- Day 4 Night = D4N
-- People Can Fly = PCF
-- Unknown Worlds = UW
-- Wolf Haus Games = WHG
+| 정식명 | 별칭 |
+|--------|------|
+| Ruckus Games | Ruckus |
+| People Can Fly | PCF |
+| Unknown Worlds | UW |
+| Day 4 Night | D4N |
+| Wolf Haus Games | WHG |
+| The Architects Republic SAS | Arkrep |
+| NB Creative Proprietary Asset | Cor3 |
+| Coconut horse, Inc. | Cyancook |
+| Gardens Interactive | Gardens |
+| Antistatic Studios | Antistatic |
+
+## 도구 사용
+1. **search_sharepoint**: 재무제표, Cap Table, 계약서 검색
+2. **get_excel_sheets** / **read_excel_sheet**: Excel 파일 읽기
+3. **read_pdf_file**: PDF 파일 읽기
+${hasConfluence ? `4. **search_confluence**: 위키 검색
+5. **read_confluence_page**: 페이지 ID로 내용 읽기` : ''}
 
 ## 답변 원칙
-1. 질문 유형에 따라 적절한 데이터 소스 선택
-   - 지분율/재무/계약서 → SharePoint
-   - 회사 정보/회의록/프로젝트 → Confluence
-2. 파일/문서 내용을 직접 읽어서 구체적인 답변 제공
-3. 출처는 클릭 가능한 마크다운 링크로 제공
-4. 한국어로 친절하게 답변`;
+1. 검색 가이드 순서대로 적절한 소스 먼저 검색
+2. 출처를 클릭 가능한 링크로 제공
+3. 최신 분기 데이터 우선 (지분율은 반드시 최신 Cap Table)
+4. 찾을 수 없으면 솔직히 "해당 정보를 찾을 수 없습니다" 답변
+5. 한국어로 친절하게`;
 
     const tools: any[] = [
       {
         name: "search_sharepoint",
-        description: "SharePoint에서 파일 검색 (재무제표, Cap Table, 계약서)",
+        description: "SharePoint에서 파일 검색 (재무제표, Cap Table, 계약서). 지분율은 '[회사명] Cap Table [연도]'로 검색.",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       },
       {
@@ -427,16 +424,15 @@ ${hasConfluence ? `5. **search_confluence**: Confluence 위키 검색
       }
     ];
 
-    // Confluence 도구 추가 (연결된 경우에만)
     if (hasConfluence) {
       tools.push({
         name: "search_confluence",
-        description: "Confluence 위키에서 문서 검색",
+        description: "Confluence 위키 검색. 2PP/ROFN은 '2PP Details', 보험은 'D&O 보험', 회사정보는 '[회사명] 투자'로 검색.",
         input_schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
       });
       tools.push({
         name: "read_confluence_page",
-        description: "Confluence 페이지 내용 읽기",
+        description: "Confluence 페이지 내용 읽기. pageId는 URL의 숫자 (예: /pages/801046205 → '801046205')",
         input_schema: { type: "object", properties: { pageId: { type: "string" } }, required: ["pageId"] }
       });
     }
